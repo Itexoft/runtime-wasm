@@ -1,0 +1,75 @@
+name: Update Runtime Version
+on:
+  schedule:
+    - cron: "0 3 */14 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  UPSTREAM_RUNTIME_REF: release/10.0
+  UPSTREAM_RUNTIME_RAW_BASE: https://raw.githubusercontent.com/dotnet/runtime
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read upstream runtime version
+        id: upstream
+        run: |
+          set -euo pipefail
+          url="${UPSTREAM_RUNTIME_RAW_BASE}/${UPSTREAM_RUNTIME_REF}/global.json"
+          version="$(python3 -c 'import json,urllib.request,sys; print(json.load(urllib.request.urlopen(sys.argv[1]))[\"sdk\"][\"version\"])' "${url}")"
+          echo "value=${version}" >> "$GITHUB_OUTPUT"
+          echo "Upstream version: ${version}"
+
+      - name: Read local VERSION
+        id: local
+        run: |
+          set -euo pipefail
+          if [ -f VERSION ]; then
+            local_version="$(cat VERSION)"
+          else
+            local_version=""
+          fi
+          echo "value=${local_version}" >> "$GITHUB_OUTPUT"
+          echo "Local version: ${local_version}"
+
+      - name: Compare versions
+        id: compare
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.upstream.outputs.value }}" = "${{ steps.local.outputs.value }}" ] && [ -n "${{ steps.upstream.outputs.value }}" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::VERSION is up to date (${{ steps.upstream.outputs.value }}). Skipping."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update VERSION
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          printf "%s" "${{ steps.upstream.outputs.value }}" > VERSION
+          git add VERSION
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update VERSION to ${{ steps.upstream.outputs.value }}"
+          git push
+
+      - name: Trigger publish
+        if: steps.compare.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run publish.yml --ref "${GITHUB_REF_NAME}"

@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.Build.NoTargets/3.7.134">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+        <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+        <PackageId>Itexoft.dotnet.runtime.wasm</PackageId>
+        <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+        <LangVersion>latest</LangVersion>
+        <RepositoryType>git</RepositoryType>
+        <Authors>Denis Kudelin</Authors>
+        <Company>Itexoft</Company>
+        <Copyright>$(Authors)</Copyright>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <RepositoryUrl>https://github.com/Itexoft/runtime-wasm</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageProjectUrl>https://github.com/Itexoft/runtime-wasm</PackageProjectUrl>
+        <Description>Prebuilt dotnet.native.wasm variants for browser-wasm.</Description>
+        <IncludeBuildOutput>false</IncludeBuildOutput>
+        <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+        <GenerateDependencyFile>false</GenerateDependencyFile>
+        <GenerateRuntimeConfigurationFiles>false</GenerateRuntimeConfigurationFiles>
+        <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+        <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+
+        <VersionFile>$(MSBuildThisFileDirectory)../VERSION</VersionFile>
+        <VersionFromFile Condition="Exists('$(VersionFile)')">$([System.IO.File]::ReadAllText('$(VersionFile)').Trim())</VersionFromFile>
+        <Version Condition="'$(VersionFromFile)' != ''">$(VersionFromFile)</Version>
+        <PackageVersion Condition="'$(VersionFromFile)' != ''">$(VersionFromFile)</PackageVersion>
+        <AssemblyVersion Condition="'$(VersionFromFile)' != ''">$(VersionFromFile)</AssemblyVersion>
+        <FileVersion Condition="'$(VersionFromFile)' != ''">$(VersionFromFile)</FileVersion>
+    </PropertyGroup>
+    
+    <ItemGroup>
+        <None Include="..\..\README.md" Pack="true" PackagePath="" Link="README.md"/>
+        <None Condition="$(ArtifactsRoot) != ''" Include="$(ArtifactsRoot)/**" Pack="true" PackagePath=""/>
+    </ItemGroup>
+</Project>

@@ -1,4 +1,4 @@
-name: Build WASM Artifacts
+name: Build WASM Artifacts (Clean)
 on:
   workflow_dispatch:
   push:
@@ -110,11 +110,49 @@ jobs:
           echo "emsdk=$emsdk_version" >> "$GITHUB_OUTPUT"
           echo "icu=$icu_sha" >> "$GITHUB_OUTPUT"
 
+      - name: Select local build roots
+        id: roots
+        run: |
+          set -euo pipefail
+          fs_type="$(stat -f -c %T "$GITHUB_WORKSPACE")"
+          base="$GITHUB_WORKSPACE"
+          case "$fs_type" in
+            cifs|smb2|nfs|nfs4|fuse.sshfs)
+              base="${RUNNER_TEMP:-/tmp}/runtime-wasm"
+              ;;
+          esac
+          if [[ -z "$base" ]]; then
+            echo "::error::LOCAL_BUILD_ROOT is empty"
+            exit 1
+          fi
+          mkdir -p "$base"
+          if ! command -v dotnet >/dev/null 2>&1; then
+            echo "::error::dotnet not found in PATH"
+            exit 1
+          fi
+          nuget_root="$(dotnet nuget locals global-packages -l | awk -F': ' '{print $2}' | tr -d '\r')"
+          if [[ -z "$nuget_root" ]]; then
+            echo "::error::Failed to resolve NuGet global-packages path"
+            exit 1
+          fi
+          nuget_root="${nuget_root%/}"
+          mkdir -p "$nuget_root"
+          echo "NUGET_PACKAGES=$nuget_root" >> "$GITHUB_ENV"
+          echo "LOCAL_BUILD_ROOT=$base" >> "$GITHUB_ENV"
+          echo "EM_CACHE_DIR=$base/emscripten-cache" >> "$GITHUB_ENV"
+          echo "ICU_REPO_DIR=$base/icu" >> "$GITHUB_ENV"
+          echo "ICU_STAGE_DIR=$base/icu-stage" >> "$GITHUB_ENV"
+          echo "RUNTIME_ARTIFACTS_DIR=$base/runtime-artifacts" >> "$GITHUB_ENV"
+          echo "FROZEN_CACHE=" >> "$GITHUB_ENV"
+          echo "EM_FROZEN_CACHE=0" >> "$GITHUB_ENV"
+          echo "EMCC_FROZEN_CACHE=0" >> "$GITHUB_ENV"
+          echo "WORKSPACE_FS_TYPE=$fs_type" >> "$GITHUB_ENV"
+
       - name: Restore NuGet cache
         id: cache-nuget
         uses: actions/cache/restore@v4
         with:
-          path: /root/.nuget/packages
+          path: ${{ env.NUGET_PACKAGES }}
           key: nuget-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ hashFiles('runtime/eng/Version.Details.xml') }}
 
       - name: Restore emsdk cache
@@ -128,7 +166,7 @@ jobs:
         id: cache-emcache
         uses: actions/cache/restore@v4
         with:
-          path: emscripten-cache
+          path: ${{ env.EM_CACHE_DIR }}
           key: emcache-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ steps.versions.outputs.emsdk }}
 
       - name: Provision emsdk
@@ -179,17 +217,24 @@ jobs:
             echo "  $emscripten_up/cache/sysroot/include/stdio.h"
             exit 1
           fi
-          llvm_ar_src="$emsdk_root/upstream/bin/llvm-ar"
-          if [[ ! -f "$llvm_ar_src" ]]; then
-            echo "::error::llvm-ar not found in emsdk upstream: $llvm_ar_src"
-            exit 1
-          fi
           mkdir -p "$emsdk_root/bin"
-          ln -sfn "$llvm_ar_src" "$emsdk_root/bin/llvm-ar"
-          if [[ ! -x "$emsdk_root/bin/llvm-ar" ]]; then
-            echo "::error::llvm-ar symlink invalid: $emsdk_root/bin/llvm-ar"
-            exit 1
-          fi
+          tool_links=(
+            "llvm-ar:$emsdk_root/upstream/bin/llvm-ar"
+            "wasm-opt:$emsdk_root/upstream/bin/wasm-opt"
+          )
+          for entry in "${tool_links[@]}"; do
+            name="${entry%%:*}"
+            src="${entry#*:}"
+            if [[ ! -x "$src" ]]; then
+              echo "::error::Required emsdk tool not found or not executable: $src"
+              exit 1
+            fi
+            ln -sfn "$src" "$emsdk_root/bin/$name"
+            if [[ ! -x "$emsdk_root/bin/$name" ]]; then
+              echo "::error::Tool symlink invalid: $emsdk_root/bin/$name"
+              exit 1
+            fi
+          done
           echo "EMSDK_PATH=$emsdk_root" >> "$GITHUB_ENV"
           llvm_root="$emsdk_root/upstream/bin"
           if [[ ! -d "$llvm_root" ]]; then
@@ -209,7 +254,7 @@ jobs:
           echo "DOTNET_EMSCRIPTEN_LLVM_ROOT=$llvm_root" >> "$GITHUB_ENV"
           echo "DOTNET_EMSCRIPTEN_BINARYEN_ROOT=$binaryen_root" >> "$GITHUB_ENV"
           echo "DOTNET_EMSCRIPTEN_NODE_JS=$node_js" >> "$GITHUB_ENV"
-          emcache="$GITHUB_WORKSPACE/emscripten-cache"
+          emcache="$EM_CACHE_DIR"
           mkdir -p "$emcache"
           cache_link="$emsdk_root/upstream/emscripten/cache"
           if [[ -e "$cache_link" && ! -L "$cache_link" ]]; then
@@ -228,28 +273,34 @@ jobs:
         run: |
           set -euo pipefail
           icu_sha="${{ steps.versions.outputs.icu }}"
-          git clone https://github.com/dotnet/icu icu
-          git -C icu checkout "${icu_sha}"
+          if [[ -e "$ICU_REPO_DIR" && ! -d "$ICU_REPO_DIR/.git" ]]; then
+            echo "::error::ICU path exists and is not a git repo: $ICU_REPO_DIR"
+            exit 1
+          fi
+          if [[ ! -d "$ICU_REPO_DIR/.git" ]]; then
+            git clone https://github.com/dotnet/icu "$ICU_REPO_DIR"
+          fi
+          git -C "$ICU_REPO_DIR" checkout "${icu_sha}"
 
       - name: Restore ICU artifacts cache
         id: cache-icu
         uses: actions/cache/restore@v4
         with:
-          path: icu/artifacts
+          path: ${{ env.ICU_REPO_DIR }}/artifacts
           key: icu-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ steps.versions.outputs.icu }}-${{ steps.versions.outputs.emsdk }}-${{ env.CONFIG }}-pic2-threads-${{ matrix.threads }}
 
       - name: Restore ICU stage
         id: cache-icu-stage
         uses: actions/cache/restore@v4
         with:
-          path: icu-stage
+          path: ${{ env.ICU_STAGE_DIR }}
           key: icu-stage-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ steps.versions.outputs.icu }}-${{ steps.versions.outputs.emsdk }}-${{ env.CONFIG }}-pic2-threads-${{ matrix.threads }}
 
       - name: Validate cached ICU stage
         if: steps.cache-icu-stage.outputs.cache-hit == 'true'
         run: |
           set -euo pipefail
-          icu_stage="$GITHUB_WORKSPACE/icu-stage"
+          icu_stage="$ICU_STAGE_DIR"
           if [[ ! -d "$icu_stage" ]]; then
             echo "::error::ICU stage cache hit but directory is missing: $icu_stage"
             exit 1
@@ -279,33 +330,34 @@ jobs:
         id: cache-runtime
         uses: actions/cache/restore@v4
         with:
-          path: runtime/artifacts
+          path: ${{ env.RUNTIME_ARTIFACTS_DIR }}
           key: runtime-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ env.CONFIG }}-${{ env.RUNTIME_REF }}-${{ steps.versions.outputs.emsdk }}-${{ steps.versions.outputs.icu }}-threads-${{ matrix.threads }}-mm${{ matrix.mm }}
 
-      - name: Cache status
+      - name: Ensure cache directories
         run: |
-          echo "cache-nuget=${{ steps.cache-nuget.outputs.cache-hit }}"
-          echo "cache-emsdk=${{ steps.cache-emsdk.outputs.cache-hit }}"
-          echo "cache-icu=${{ steps.cache-icu.outputs.cache-hit }}"
-          echo "cache-icu-stage=${{ steps.cache-icu-stage.outputs.cache-hit }}"
-          echo "cache-emcache=${{ steps.cache-emcache.outputs.cache-hit }}"
-          echo "cache-runtime=${{ steps.cache-runtime.outputs.cache-hit }}"
+          set -euo pipefail
+          mkdir -p "$NUGET_PACKAGES"
+          mkdir -p "$EM_CACHE_DIR"
+          mkdir -p "$RUNTIME_ARTIFACTS_DIR"
+          if [[ "${{ steps.cache-icu-stage.outputs.cache-hit }}" == "true" ]]; then
+            mkdir -p "$ICU_STAGE_DIR"
+          fi
 
       - name: Patch ICU CFLAGS for PIC
         run: |
           set -euo pipefail
-          mk="$GITHUB_WORKSPACE/icu/eng/icu.browser.mk"
+          mk="$ICU_REPO_DIR/eng/icu.browser.mk"
           if [[ ! -f "$mk" ]]; then
             echo "::error::icu.browser.mk not found: $mk"
             exit 1
           fi
           python3 - <<'PY'
-          import re,sys
-          path = "icu/eng/icu.browser.mk"
+          import os,sys
+          path = os.path.join(os.environ["ICU_REPO_DIR"], "eng", "icu.browser.mk")
           text = open(path, encoding="utf-8").read()
           def add_pic(line):
               if "-fPIC" in line:
-                  return line
+                return line
               return line.replace("-Wno-sign-compare", "-Wno-sign-compare -fPIC")
           new_lines = []
           changed = False
@@ -343,7 +395,7 @@ jobs:
             echo "::error::runtime emsdk_env.sh not found: $runtime_emsdk/emsdk_env.sh"
             exit 1
           fi
-          icu_emsdk="$GITHUB_WORKSPACE/icu/artifacts/obj/emsdk"
+          icu_emsdk="$ICU_REPO_DIR/artifacts/obj/emsdk"
           mkdir -p "$(dirname "$icu_emsdk")"
           if [[ -e "$icu_emsdk" && ! -L "$icu_emsdk" ]]; then
             rm -rf "$icu_emsdk"
@@ -365,9 +417,9 @@ jobs:
         run: |
           set -euo pipefail
           source "$GITHUB_WORKSPACE/runtime/src/mono/browser/emsdk/emsdk_env.sh"
-          export EM_CACHE="$GITHUB_WORKSPACE/emscripten-cache"
+          export EM_CACHE="$EM_CACHE_DIR"
           mkdir -p "$EM_CACHE"
-          icu_base="$GITHUB_WORKSPACE/icu/artifacts/bin/icu-browser-wasm"
+          icu_base="$ICU_REPO_DIR/artifacts/bin/icu-browser-wasm"
           icu_src_cfg="$icu_base/$CONFIG/runtimes/browser-wasm/native"
           icu_src_flat="$icu_base/runtimes/browser-wasm/native"
           icu_has_libs=0
@@ -384,7 +436,7 @@ jobs:
           fi
 
           if [[ "$icu_has_libs" -ne 1 ]]; then
-            pushd icu
+            pushd "$ICU_REPO_DIR"
             ./build.sh /p:TargetOS=Browser /p:TargetArchitecture=wasm /p:Configuration=$CONFIG /p:WasmEnableThreads=${{ matrix.threads }} /p:ExtraCFlags=-fPIC /p:ExtraCxxFlags=-fPIC
             popd
           fi
@@ -409,7 +461,7 @@ jobs:
             exit 1
           fi
 
-          icu_stage="$GITHUB_WORKSPACE/icu-stage"
+          icu_stage="$ICU_STAGE_DIR"
           if [[ -e "$icu_stage" ]]; then
             echo "::error::ICU stage already exists: $icu_stage"
             exit 1
@@ -463,21 +515,21 @@ jobs:
         if: always() && steps.cache-icu.outputs.cache-hit != 'true' && steps.build-icu.outcome == 'success'
         uses: actions/cache/save@v4
         with:
-          path: icu/artifacts
+          path: ${{ env.ICU_REPO_DIR }}/artifacts
           key: icu-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ steps.versions.outputs.icu }}-${{ steps.versions.outputs.emsdk }}-${{ env.CONFIG }}-pic2-threads-${{ matrix.threads }}
 
       - name: Save ICU stage cache
         if: always() && steps.cache-icu-stage.outputs.cache-hit != 'true' && steps.build-icu.outcome == 'success'
         uses: actions/cache/save@v4
         with:
-          path: icu-stage
+          path: ${{ env.ICU_STAGE_DIR }}
           key: icu-stage-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ steps.versions.outputs.icu }}-${{ steps.versions.outputs.emsdk }}-${{ env.CONFIG }}-pic2-threads-${{ matrix.threads }}
 
       - name: Validate cached runtime artifacts
         if: steps.cache-runtime.outputs.cache-hit == 'true'
         run: |
           set -euo pipefail
-          base="$GITHUB_WORKSPACE/runtime/artifacts/bin"
+          base="$RUNTIME_ARTIFACTS_DIR/bin"
           wasm="$base/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes/browser-wasm/native/dotnet.native.wasm"
           if [[ "${{ matrix.threads }}" == "true" ]]; then
             wasm="$base/microsoft.netcore.app.runtime.multithread.browser-wasm/$CONFIG/runtimes/browser-wasm/native/dotnet.native.wasm"
@@ -504,50 +556,234 @@ jobs:
         id: build-runtime
         if: steps.cache-runtime.outputs.cache-hit != 'true'
         env:
-          EMCC_EXTRA_CFLAGS: "-I$GITHUB_WORKSPACE/icu-headers/include -fPIC -DWASM_SUPPORTS_DLOPEN=1"
           EXTRA_CFLAGS: "-fPIC"
           EXTRA_CXXFLAGS: "-fPIC"
+          EMCC_DEBUG: "1"
         run: |
           set -euo pipefail
-          cache="$GITHUB_WORKSPACE/emscripten-cache"
+          cache="$EM_CACHE_DIR"
           mkdir -p "$cache"
           export EM_CACHE="$cache"
 
+          extra_cflags="-I$GITHUB_WORKSPACE/icu-headers/include -fPIC -DWASM_SUPPORTS_DLOPEN=1"
           extra_ld="-s MAIN_MODULE=${{ matrix.mm }}"
+          wasm_enable_simd="true"
           if [[ "${{ matrix.threads }}" == "true" ]]; then
-            extra_ld="${extra_ld} -Wno-experimental"
+            extra_cflags="${extra_cflags} -pthread"
+            extra_ld="${extra_ld} -pthread -Wno-experimental"
           fi
 
           ./runtime/build.sh \
-            -s mono.runtime+mono.wasmruntime+libs.native+libs.pretest+packs \
+            -s mono.runtime+mono.wasmruntime+libs.native+packs \
             -os browser -arch wasm -c "$CONFIG" \
             /p:WasmEnableThreads=${{ matrix.threads }} \
+            "/p:__RootBinDir=$RUNTIME_ARTIFACTS_DIR/" \
+            /p:BuildTests=false \
+            /p:RunTests=false \
             "/p:ICULibDir=$ICU_LIB_DIR" \
             "/p:IcuDir=$ICU_DIR" \
             "/p:CMakeArgs=-DCMAKE_POSITION_INDEPENDENT_CODE=ON" \
-            "/p:EmccExtraCFlags=$EMCC_EXTRA_CFLAGS" \
+            "/p:EmccExtraCFlags=$extra_cflags" \
             "/p:EmccExtraLDFlags=${extra_ld}" \
+            "/p:WasmEnableSIMD=${wasm_enable_simd}" \
             "/p:WasmCachePath=$cache"
+
+      - name: Verify wasm flags consistency
+        if: steps.cache-runtime.outputs.cache-hit == 'true' || steps.build-runtime.outcome == 'success'
+        run: |
+          set -euo pipefail
+          native_bin="$RUNTIME_ARTIFACTS_DIR/bin/native/net10.0-browser-Release-wasm"
+          rsp_dir="$native_bin/src"
+          for f in emcc-default.rsp emcc-compile.rsp emcc-link.rsp; do
+            if [[ ! -f "$rsp_dir/$f" ]]; then
+              echo "::error::Missing $rsp_dir/$f"
+              exit 1
+            fi
+          done
+
+          compile_flags="$(tr '\n' ' ' < "$rsp_dir/emcc-compile.rsp")"
+          link_flags="$(tr '\n' ' ' < "$rsp_dir/emcc-link.rsp")"
+
+          if ! grep -q -- "-fPIC" "$rsp_dir/emcc-compile.rsp"; then
+            echo "::error::-fPIC missing in emcc-compile.rsp"
+            exit 1
+          fi
+          if ! grep -q -- "-DWASM_SUPPORTS_DLOPEN=1" "$rsp_dir/emcc-compile.rsp"; then
+            echo "::error::-DWASM_SUPPORTS_DLOPEN=1 missing in emcc-compile.rsp"
+            exit 1
+          fi
+
+          if ! grep -q -- "MAIN_MODULE=${{ matrix.mm }}" "$rsp_dir/emcc-link.rsp"; then
+            echo "::error::MAIN_MODULE=${{ matrix.mm }} missing in emcc-link.rsp"
+            exit 1
+          fi
+
+          if [[ "${{ matrix.threads }}" == "true" ]]; then
+            if ! grep -q -- "USE_PTHREADS=1" "$rsp_dir/emcc-link.rsp"; then
+              echo "::error::USE_PTHREADS=1 missing in emcc-link.rsp for threads=true"
+              exit 1
+            fi
+            if ! grep -q -- "-pthread" "$rsp_dir/emcc-compile.rsp"; then
+              echo "::error::-pthread missing in emcc-compile.rsp for threads=true"
+              exit 1
+            fi
+            if ! grep -q -- "-Wno-experimental" "$rsp_dir/emcc-link.rsp"; then
+              echo "::error::-Wno-experimental missing in emcc-link.rsp for threads=true"
+              exit 1
+            fi
+          else
+            if grep -q -- "USE_PTHREADS=1" "$rsp_dir/emcc-link.rsp"; then
+              echo "::error::USE_PTHREADS=1 present in emcc-link.rsp for threads=false"
+              exit 1
+            fi
+            if grep -q -- "-pthread" "$rsp_dir/emcc-compile.rsp"; then
+              echo "::error::-pthread present in emcc-compile.rsp for threads=false"
+              exit 1
+            fi
+            if grep -q -- "-Wno-experimental" "$rsp_dir/emcc-link.rsp"; then
+              echo "::error::-Wno-experimental present in emcc-link.rsp for threads=false"
+              exit 1
+            fi
+          fi
+
+          if [[ ! -f "$native_bin/CMakeCache.txt" ]]; then
+            echo "::error::Missing CMakeCache.txt: $native_bin/CMakeCache.txt"
+            exit 1
+          fi
+          if ! grep -q -- "CMAKE_POSITION_INDEPENDENT_CODE:BOOL=ON" "$native_bin/CMakeCache.txt"; then
+            echo "::error::CMAKE_POSITION_INDEPENDENT_CODE is not ON in CMakeCache.txt"
+            exit 1
+          fi
+          if [[ "${{ matrix.threads }}" == "true" ]]; then
+            if ! grep -q -- "CONFIGURATION_WASM_OPT_FLAGS:STRING=.*--enable-threads" "$native_bin/CMakeCache.txt"; then
+              echo "::error::CONFIGURATION_WASM_OPT_FLAGS missing --enable-threads in CMakeCache.txt"
+              exit 1
+            fi
+          else
+            if grep -q -- "CONFIGURATION_WASM_OPT_FLAGS:STRING=.*--enable-threads" "$native_bin/CMakeCache.txt"; then
+              echo "::error::CONFIGURATION_WASM_OPT_FLAGS includes --enable-threads for threads=false"
+              exit 1
+            fi
+          fi
+          if ! grep -q -- "CONFIGURATION_WASM_OPT_FLAGS:STRING=.*--enable-simd" "$native_bin/CMakeCache.txt"; then
+            echo "::error::CONFIGURATION_WASM_OPT_FLAGS missing --enable-simd in CMakeCache.txt"
+            exit 1
+          fi
+
+          obj_root="$RUNTIME_ARTIFACTS_DIR/obj/native/net10.0-browser-Release-wasm"
+          if [[ -d "$obj_root" ]]; then
+            mapfile -t flag_files < <(find "$obj_root" -name "flags.make")
+            if [[ "${#flag_files[@]}" -eq 0 ]]; then
+              echo "::error::No flags.make files found under $obj_root"
+              exit 1
+            fi
+            for f in "${flag_files[@]}"; do
+              if ! grep -q -- "-fPIC" "$f"; then
+                echo "::error::-fPIC missing in $f"
+                exit 1
+              fi
+              if ! grep -q -- "-msimd128" "$f"; then
+                echo "::error::-msimd128 missing in $f"
+                exit 1
+              fi
+              if [[ "${{ matrix.threads }}" == "true" ]]; then
+                if ! grep -q -- "-pthread" "$f"; then
+                  echo "::error::-pthread missing in $f for threads=true"
+                  exit 1
+                fi
+              else
+                if grep -q -- "-pthread" "$f"; then
+                  echo "::error::-pthread present in $f for threads=false"
+                  exit 1
+                fi
+              fi
+            done
+          else
+            echo "::error::Missing obj root: $obj_root"
+            exit 1
+          fi
+
+          echo "compile_flags=$compile_flags" >> "$GITHUB_OUTPUT"
+          echo "link_flags=$link_flags" >> "$GITHUB_OUTPUT"
+
+      - name: Collect diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/artifacts/diagnostics/${{ matrix.name }}"
+          mkdir -p "$out"
+
+          native_bin="$RUNTIME_ARTIFACTS_DIR/bin/native/net10.0-browser-Release-wasm"
+          if [[ -d "$native_bin" ]]; then
+            mkdir -p "$out/native-bin"
+            if [[ -d "$native_bin/src" ]]; then
+              cp -a "$native_bin/src" "$out/native-bin/"
+            fi
+            if [[ -f "$native_bin/CMakeCache.txt" ]]; then
+              cp -f "$native_bin/CMakeCache.txt" "$out/native-bin/"
+            fi
+            for f in dotnet.native.wasm dotnet.native.js dotnet.native.js.map; do
+              if [[ -f "$native_bin/$f" ]]; then
+                cp -f "$native_bin/$f" "$out/native-bin/"
+              fi
+            done
+          fi
+
+          pack_base="$RUNTIME_ARTIFACTS_DIR/bin"
+          if [[ "${{ matrix.threads }}" == "true" ]]; then
+            pack_dir="$pack_base/microsoft.netcore.app.runtime.multithread.browser-wasm/$CONFIG/runtimes/browser-wasm/native"
+          else
+            pack_dir="$pack_base/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes/browser-wasm/native"
+          fi
+          if [[ -d "$pack_dir" ]]; then
+            mkdir -p "$out/runtime-pack"
+            if [[ -f "$pack_dir/dotnet.native.wasm" ]]; then
+              cp -f "$pack_dir/dotnet.native.wasm" "$out/runtime-pack/"
+            fi
+          fi
+
+          obj_root="$RUNTIME_ARTIFACTS_DIR/obj/native/net10.0-browser-Release-wasm"
+          if [[ -d "$obj_root" ]]; then
+            mkdir -p "$out/obj-native"
+            find "$obj_root" -type f \( -name "flags.make" -o -name "link.txt" -o -name "CMakeCache.txt" \) | while read -r f; do
+              rel="${f#$obj_root/}"
+              mkdir -p "$out/obj-native/$(dirname "$rel")"
+              cp -f "$f" "$out/obj-native/$rel"
+            done
+          fi
+
+          if [[ -f "$GITHUB_WORKSPACE/runtime/src/mono/browser/emsdk/.emscripten" ]]; then
+            cp -f "$GITHUB_WORKSPACE/runtime/src/mono/browser/emsdk/.emscripten" "$out/"
+          fi
+          if [[ -f "$EM_CACHE_DIR/sanity.txt" ]]; then
+            cp -f "$EM_CACHE_DIR/sanity.txt" "$out/"
+          fi
+          if [[ -d "$RUNTIME_ARTIFACTS_DIR/log" ]]; then
+            cp -a "$RUNTIME_ARTIFACTS_DIR/log" "$out/"
+          fi
+          if [[ -d /tmp/emscripten_temp ]]; then
+            tar -czf "$out/emscripten_temp.tgz" -C /tmp emscripten_temp
+          fi
 
       - name: Save runtime artifacts cache
         if: always() && steps.cache-runtime.outputs.cache-hit != 'true' && steps.build-runtime.outcome == 'success'
         uses: actions/cache/save@v4
         with:
-          path: runtime/artifacts
+          path: ${{ env.RUNTIME_ARTIFACTS_DIR }}
           key: runtime-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ env.CONFIG }}-${{ env.RUNTIME_REF }}-${{ steps.versions.outputs.emsdk }}-${{ steps.versions.outputs.icu }}-threads-${{ matrix.threads }}-mm${{ matrix.mm }}
 
       - name: Save emscripten build cache
         if: always() && steps.cache-emcache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: emscripten-cache
+          path: ${{ env.EM_CACHE_DIR }}
           key: emcache-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ steps.versions.outputs.emsdk }}
 
       - name: Save NuGet cache
         if: always() && steps.cache-nuget.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: /root/.nuget/packages
+          path: ${{ env.NUGET_PACKAGES }}
           key: nuget-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ hashFiles('runtime/eng/Version.Details.xml') }}
 
       - name: Assemble artifacts
@@ -556,9 +792,9 @@ jobs:
           out="$GITHUB_WORKSPACE/artifacts/${{ matrix.name }}"
           mkdir -p "$out/runtimes/browser-wasm/native"
 
-          wasm="$GITHUB_WORKSPACE/runtime/artifacts/bin/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes/browser-wasm/native/dotnet.native.wasm"
+          wasm="$RUNTIME_ARTIFACTS_DIR/bin/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes/browser-wasm/native/dotnet.native.wasm"
           if [[ "${{ matrix.threads }}" == "true" ]]; then
-            wasm="$GITHUB_WORKSPACE/runtime/artifacts/bin/microsoft.netcore.app.runtime.multithread.browser-wasm/$CONFIG/runtimes/browser-wasm/native/dotnet.native.wasm"
+            wasm="$RUNTIME_ARTIFACTS_DIR/bin/microsoft.netcore.app.runtime.multithread.browser-wasm/$CONFIG/runtimes/browser-wasm/native/dotnet.native.wasm"
           fi
 
           suffix="st"
@@ -571,9 +807,9 @@ jobs:
           if [[ "${{ matrix.copy_pack }}" == "true" ]]; then
             if [[ "${{ matrix.threads }}" == "true" ]]; then
               mkdir -p "$out/runtimes/browser-wasm/native.multithread"
-              cp -a "$GITHUB_WORKSPACE/runtime/artifacts/bin/microsoft.netcore.app.runtime.multithread.browser-wasm/$CONFIG/runtimes/browser-wasm/native" "$out/runtimes/browser-wasm/native.multithread"
+              cp -a "$RUNTIME_ARTIFACTS_DIR/bin/microsoft.netcore.app.runtime.multithread.browser-wasm/$CONFIG/runtimes/browser-wasm/native" "$out/runtimes/browser-wasm/native.multithread"
             else
-              cp -a "$GITHUB_WORKSPACE/runtime/artifacts/bin/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes" "$out/"
+              cp -a "$RUNTIME_ARTIFACTS_DIR/bin/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes" "$out/"
             fi
           fi
 
@@ -582,40 +818,5 @@ jobs:
         with:
           name: runtime-wasm-${{ matrix.name }}
           path: artifacts/${{ matrix.name }}
-          if-no-files-found: error
-          retention-days: 1
-
-  merge:
-    runs-on: ubuntu-latest
-    needs: build
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Merge artifacts
-        run: |
-          set -euo pipefail
-          merged="$GITHUB_WORKSPACE/artifacts-merged"
-          rm -rf "$merged"
-          mkdir -p "$merged"
-
-          cp -a "artifacts/runtime-wasm-st-mm1/runtimes" "$merged/"
-          cp -a "artifacts/runtime-wasm-mt-mm1/runtimes/browser-wasm/native.multithread" "$merged/runtimes/browser-wasm/"
-          mkdir -p "$merged/runtimes/browser-wasm/native"
-
-          cp -f "artifacts/runtime-wasm-st-mm1/runtimes/browser-wasm/native/dotnet.native.st.dl.mm1.wasm" "$merged/runtimes/browser-wasm/native/"
-          cp -f "artifacts/runtime-wasm-st-mm2/runtimes/browser-wasm/native/dotnet.native.st.dl.mm2.wasm" "$merged/runtimes/browser-wasm/native/"
-          cp -f "artifacts/runtime-wasm-mt-mm1/runtimes/browser-wasm/native/dotnet.native.mt.dl.mm1.wasm" "$merged/runtimes/browser-wasm/native/"
-          cp -f "artifacts/runtime-wasm-mt-mm2/runtimes/browser-wasm/native/dotnet.native.mt.dl.mm2.wasm" "$merged/runtimes/browser-wasm/native/"
-
-      - name: Upload merged artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: runtime-wasm-merged
-          path: artifacts-merged
           if-no-files-found: error
           retention-days: 1

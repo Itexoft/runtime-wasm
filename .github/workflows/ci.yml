@@ -38,7 +38,7 @@ jobs:
             copy_pack: "false"
     env:
       ROOTFS_DIR: /crossrootfs/x64
-      RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}/runtime-artifacts
+      RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}/runtime/artifacts
       EM_CACHE_DIR: ${{ github.workspace }}/emscripten-cache
       CFLAGS: ""
       CXXFLAGS: ""
@@ -138,7 +138,7 @@ jobs:
           echo "NUGET_PACKAGES=$nuget_root" >> "$GITHUB_ENV"
           echo "LOCAL_BUILD_ROOT=$base" >> "$GITHUB_ENV"
           echo "EM_CACHE_DIR=$base/emscripten-cache/${{ matrix.name }}" >> "$GITHUB_ENV"
-          echo "RUNTIME_ARTIFACTS_DIR=$base/runtime-artifacts" >> "$GITHUB_ENV"
+          echo "RUNTIME_ARTIFACTS_DIR=$GITHUB_WORKSPACE/runtime/artifacts" >> "$GITHUB_ENV"
           echo "FROZEN_CACHE=" >> "$GITHUB_ENV"
           echo "EM_FROZEN_CACHE=0" >> "$GITHUB_ENV"
           echo "EMCC_FROZEN_CACHE=0" >> "$GITHUB_ENV"
@@ -319,26 +319,25 @@ jobs:
         if: steps.cache-runtime.outputs.cache-hit == 'true'
         run: |
           set -euo pipefail
-          base="$RUNTIME_ARTIFACTS_DIR/bin"
-          wasm="$base/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes/browser-wasm/native/dotnet.native.wasm"
-          if [[ "${{ matrix.threads }}" == "true" ]]; then
-            wasm="$base/microsoft.netcore.app.runtime.multithread.browser-wasm/$CONFIG/runtimes/browser-wasm/native/dotnet.native.wasm"
-          fi
+          native_dir="$RUNTIME_ARTIFACTS_DIR/bin/native"
+          wasm="$native_dir/net10.0-browser-$CONFIG-wasm/dotnet.native.wasm"
           if [[ ! -f "$wasm" ]]; then
             echo "::error::Cached runtime artifacts missing dotnet.native.wasm: $wasm"
             exit 1
           fi
           if [[ "${{ matrix.copy_pack }}" == "true" ]]; then
+            pkg_dir="$RUNTIME_ARTIFACTS_DIR/packages/$CONFIG/Shipping"
             if [[ "${{ matrix.threads }}" == "true" ]]; then
-              if [[ ! -d "$base/microsoft.netcore.app.runtime.multithread.browser-wasm/$CONFIG/runtimes/browser-wasm/native" ]]; then
-                echo "::error::Cached runtime pack missing native.multithread runtime"
-                exit 1
-              fi
+              pkg_pattern="Microsoft.NETCore.App.Runtime.Mono.multithread.browser-wasm.*.nupkg"
             else
-              if [[ ! -d "$base/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes/browser-wasm" ]]; then
-                echo "::error::Cached runtime pack missing runtimes/browser-wasm"
-                exit 1
-              fi
+              pkg_pattern="Microsoft.NETCore.App.Runtime.Mono.browser-wasm.*.nupkg"
+            fi
+            shopt -s nullglob
+            pkgs=("$pkg_dir"/$pkg_pattern)
+            shopt -u nullglob
+            if [[ "${#pkgs[@]}" -ne 1 ]]; then
+              echo "::error::Expected exactly one runtime pack ($pkg_pattern) under $pkg_dir, found ${#pkgs[@]}"
+              exit 1
             fi
           fi
 
@@ -367,7 +366,6 @@ jobs:
             -s mono.runtime+mono.wasmruntime+libs.native+packs \
             -os browser -arch wasm -c "$CONFIG" \
             /p:WasmEnableThreads=${{ matrix.threads }} \
-            "/p:ArtifactsDir=$RUNTIME_ARTIFACTS_DIR/" \
             /p:BuildTests=false \
             /p:RunTests=false \
             "/p:ICULibDir=$ICU_LIB_DIR" \
@@ -464,10 +462,8 @@ jobs:
           out="$GITHUB_WORKSPACE/artifacts/${{ matrix.name }}"
           mkdir -p "$out/runtimes/browser-wasm/native"
 
-          wasm="$RUNTIME_ARTIFACTS_DIR/bin/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes/browser-wasm/native/dotnet.native.wasm"
-          if [[ "${{ matrix.threads }}" == "true" ]]; then
-            wasm="$RUNTIME_ARTIFACTS_DIR/bin/microsoft.netcore.app.runtime.multithread.browser-wasm/$CONFIG/runtimes/browser-wasm/native/dotnet.native.wasm"
-          fi
+          native_dir="$RUNTIME_ARTIFACTS_DIR/bin/native/net10.0-browser-$CONFIG-wasm"
+          wasm="$native_dir/dotnet.native.wasm"
 
           suffix="st"
           if [[ "${{ matrix.threads }}" == "true" ]]; then
@@ -477,12 +473,59 @@ jobs:
           cp -f "$wasm" "$out/runtimes/browser-wasm/native/dotnet.native.${suffix}.dl.mm${{ matrix.mm }}.wasm"
 
           if [[ "${{ matrix.copy_pack }}" == "true" ]]; then
+            pkg_dir="$RUNTIME_ARTIFACTS_DIR/packages/$CONFIG/Shipping"
             if [[ "${{ matrix.threads }}" == "true" ]]; then
-              mkdir -p "$out/runtimes/browser-wasm/native.multithread"
-              cp -a "$RUNTIME_ARTIFACTS_DIR/bin/microsoft.netcore.app.runtime.multithread.browser-wasm/$CONFIG/runtimes/browser-wasm/native" "$out/runtimes/browser-wasm/native.multithread"
+              pkg_pattern="Microsoft.NETCore.App.Runtime.Mono.multithread.browser-wasm.*.nupkg"
             else
-              cp -a "$RUNTIME_ARTIFACTS_DIR/bin/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes" "$out/"
+              pkg_pattern="Microsoft.NETCore.App.Runtime.Mono.browser-wasm.*.nupkg"
             fi
+            shopt -s nullglob
+            pkgs=("$pkg_dir"/$pkg_pattern)
+            shopt -u nullglob
+            if [[ "${#pkgs[@]}" -ne 1 ]]; then
+              echo "::error::Expected exactly one runtime pack ($pkg_pattern) under $pkg_dir, found ${#pkgs[@]}"
+              exit 1
+            fi
+            pkg="${pkgs[0]}"
+            python3 - "$pkg" "$out" "${{ matrix.threads }}" <<'PY'
+          import os
+          import shutil
+          import sys
+          import zipfile
+
+          pkg_path = sys.argv[1]
+          out_dir = sys.argv[2]
+          is_threads = sys.argv[3].lower() == "true"
+
+          if not os.path.isfile(pkg_path):
+              print(f"::error::Runtime pack not found: {pkg_path}", file=sys.stderr)
+              sys.exit(1)
+
+          with zipfile.ZipFile(pkg_path) as zf:
+              entries = [n for n in zf.namelist() if n.startswith("runtimes/browser-wasm/")]
+              if not entries:
+                  print(f"::error::Runtime pack missing runtimes/browser-wasm in {pkg_path}", file=sys.stderr)
+                  sys.exit(1)
+              for name in entries:
+                  dest = os.path.join(out_dir, name)
+                  if name.endswith("/"):
+                      os.makedirs(dest, exist_ok=True)
+                      continue
+                  os.makedirs(os.path.dirname(dest), exist_ok=True)
+                  with zf.open(name) as src, open(dest, "wb") as dst:
+                      shutil.copyfileobj(src, dst)
+
+          if is_threads:
+              src_dir = os.path.join(out_dir, "runtimes", "browser-wasm", "native")
+              dst_dir = os.path.join(out_dir, "runtimes", "browser-wasm", "native.multithread")
+              if not os.path.isdir(src_dir):
+                  print(f"::error::Expected native runtime pack directory missing: {src_dir}", file=sys.stderr)
+                  sys.exit(1)
+              if os.path.exists(dst_dir):
+                  print(f"::error::Target multithread directory already exists: {dst_dir}", file=sys.stderr)
+                  sys.exit(1)
+              os.rename(src_dir, dst_dir)
+          PY
           fi
 
       - name: Collect NuGet packages

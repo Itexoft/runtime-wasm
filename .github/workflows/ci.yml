@@ -10,6 +10,8 @@ env:
   RUNTIME_REPO: https://github.com/Itexoft/runtime
   RUNTIME_REF: wasm-dylink-pinvoke-10.0
   CONFIG: Release
+  EMSDK_VERSION: latest
+  WASM_OPT_MIN_VERSION: "125"
 
 jobs:
   build:
@@ -80,9 +82,9 @@ jobs:
         id: versions
         run: |
           set -euo pipefail
-          emsdk_version="$(cat runtime/src/mono/browser/emscripten-version.txt)"
+          emsdk_version="${EMSDK_VERSION}"
           if [[ -z "${emsdk_version}" ]]; then
-            echo "::error::emscripten-version.txt is empty"
+            echo "::error::EMSDK_VERSION is empty"
             exit 1
           fi
           icu_transport="$(python3 - <<'PY'
@@ -153,6 +155,7 @@ jobs:
 
       - name: Restore emsdk cache
         id: cache-emsdk
+        if: env.EMSDK_VERSION != 'latest'
         uses: actions/cache/restore@v4
         with:
           path: runtime/src/mono/browser/emsdk
@@ -160,6 +163,7 @@ jobs:
 
       - name: Restore emscripten build cache
         id: cache-emcache
+        if: env.EMSDK_VERSION != 'latest'
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.EM_CACHE_DIR }}
@@ -235,6 +239,36 @@ jobs:
               exit 1
             fi
           done
+          wasm_opt="$emsdk_root/bin/wasm-opt"
+          if [[ ! -x "$wasm_opt" ]]; then
+            echo "::error::wasm-opt not found under EMSDK_PATH: $wasm_opt"
+            exit 1
+          fi
+          wasm_opt_version="$("$wasm_opt" --version | awk '{print $3}')"
+          if [[ -z "$wasm_opt_version" ]]; then
+            echo "::error::Failed to parse wasm-opt version"
+            exit 1
+          fi
+          case "$wasm_opt_version" in
+            ''|*[!0-9]*)
+              echo "::error::Unexpected wasm-opt version format: $wasm_opt_version"
+              exit 1
+              ;;
+          esac
+          if [[ -z "${WASM_OPT_MIN_VERSION:-}" ]]; then
+            echo "::error::WASM_OPT_MIN_VERSION is not set"
+            exit 1
+          fi
+          case "$WASM_OPT_MIN_VERSION" in
+            ''|*[!0-9]*)
+              echo "::error::WASM_OPT_MIN_VERSION must be numeric: $WASM_OPT_MIN_VERSION"
+              exit 1
+              ;;
+          esac
+          if (( wasm_opt_version < WASM_OPT_MIN_VERSION )); then
+            echo "::error::wasm-opt version too old ($wasm_opt_version), expected >= $WASM_OPT_MIN_VERSION"
+            exit 1
+          fi
           echo "EMSDK_PATH=$emsdk_root" >> "$GITHUB_ENV"
           llvm_root="$emsdk_root/upstream/bin"
           if [[ ! -d "$llvm_root" ]]; then
@@ -288,7 +322,7 @@ jobs:
           echo "PATH=$emsdk_root/upstream/emscripten:$emsdk_root/upstream/bin:$PATH" >> "$GITHUB_ENV"
 
       - name: Save emsdk cache
-        if: always() && steps.cache-emsdk.outputs.cache-hit != 'true' && steps.provision-emsdk.outcome == 'success'
+        if: env.EMSDK_VERSION != 'latest' && always() && steps.cache-emsdk.outputs.cache-hit != 'true' && steps.provision-emsdk.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: runtime/src/mono/browser/emsdk
@@ -296,6 +330,7 @@ jobs:
 
       - name: Restore runtime artifacts
         id: cache-runtime
+        if: env.EMSDK_VERSION != 'latest'
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.RUNTIME_ARTIFACTS_DIR }}
@@ -458,14 +493,14 @@ jobs:
           fi
 
       - name: Save runtime artifacts cache
-        if: always() && steps.cache-runtime.outputs.cache-hit != 'true' && steps.build-runtime.outcome == 'success'
+        if: env.EMSDK_VERSION != 'latest' && always() && steps.cache-runtime.outputs.cache-hit != 'true' && steps.build-runtime.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: ${{ env.RUNTIME_ARTIFACTS_DIR }}
           key: runtime-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ env.CONFIG }}-${{ env.RUNTIME_REF }}-${{ steps.versions.outputs.emsdk }}-${{ steps.versions.outputs.icu }}-threads-${{ matrix.threads }}-mm${{ matrix.mm }}
 
       - name: Save emscripten build cache
-        if: always() && steps.cache-emcache.outputs.cache-hit != 'true'
+        if: env.EMSDK_VERSION != 'latest' && always() && steps.cache-emcache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ env.EM_CACHE_DIR }}

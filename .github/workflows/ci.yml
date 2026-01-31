@@ -169,6 +169,10 @@ jobs:
         id: provision-emsdk
         run: |
           set -euo pipefail
+          if [[ -z "${EM_CACHE_DIR:-}" ]]; then
+            echo "::error::EM_CACHE_DIR is not set"
+            exit 1
+          fi
           emsdk_version="${{ steps.versions.outputs.emsdk }}"
           if [[ ! -d "$GITHUB_WORKSPACE/runtime/src/mono/browser/emsdk" ]]; then
             git clone https://github.com/emscripten-core/emsdk.git runtime/src/mono/browser/emsdk
@@ -300,6 +304,18 @@ jobs:
       - name: Ensure cache directories
         run: |
           set -euo pipefail
+          if [[ -z "${NUGET_PACKAGES:-}" ]]; then
+            echo "::error::NUGET_PACKAGES is not set"
+            exit 1
+          fi
+          if [[ -z "${EM_CACHE_DIR:-}" ]]; then
+            echo "::error::EM_CACHE_DIR is not set"
+            exit 1
+          fi
+          if [[ -z "${RUNTIME_ARTIFACTS_DIR:-}" ]]; then
+            echo "::error::RUNTIME_ARTIFACTS_DIR is not set"
+            exit 1
+          fi
           mkdir -p "$NUGET_PACKAGES"
           mkdir -p "$EM_CACHE_DIR"
           mkdir -p "$RUNTIME_ARTIFACTS_DIR"
@@ -333,10 +349,16 @@ jobs:
               pkg_pattern="Microsoft.NETCore.App.Runtime.Mono.browser-wasm.*.nupkg"
             fi
             shopt -s nullglob
-            pkgs=("$pkg_dir"/$pkg_pattern)
+            pkgs=()
+            for candidate in "$pkg_dir"/$pkg_pattern; do
+              if [[ "$candidate" == *.symbols.nupkg ]]; then
+                continue
+              fi
+              pkgs+=("$candidate")
+            done
             shopt -u nullglob
             if [[ "${#pkgs[@]}" -ne 1 ]]; then
-              echo "::error::Expected exactly one runtime pack ($pkg_pattern) under $pkg_dir, found ${#pkgs[@]}"
+              echo "::error::Expected exactly one runtime pack (non-symbols, $pkg_pattern) under $pkg_dir, found ${#pkgs[@]}"
               exit 1
             fi
           fi
@@ -480,10 +502,16 @@ jobs:
               pkg_pattern="Microsoft.NETCore.App.Runtime.Mono.browser-wasm.*.nupkg"
             fi
             shopt -s nullglob
-            pkgs=("$pkg_dir"/$pkg_pattern)
+            pkgs=()
+            for candidate in "$pkg_dir"/$pkg_pattern; do
+              if [[ "$candidate" == *.symbols.nupkg ]]; then
+                continue
+              fi
+              pkgs+=("$candidate")
+            done
             shopt -u nullglob
             if [[ "${#pkgs[@]}" -ne 1 ]]; then
-              echo "::error::Expected exactly one runtime pack ($pkg_pattern) under $pkg_dir, found ${#pkgs[@]}"
+              echo "::error::Expected exactly one runtime pack (non-symbols, $pkg_pattern) under $pkg_dir, found ${#pkgs[@]}"
               exit 1
             fi
             pkg="${pkgs[0]}"

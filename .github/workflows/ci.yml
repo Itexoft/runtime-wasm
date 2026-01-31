@@ -367,7 +367,7 @@ jobs:
             -s mono.runtime+mono.wasmruntime+libs.native+packs \
             -os browser -arch wasm -c "$CONFIG" \
             /p:WasmEnableThreads=${{ matrix.threads }} \
-            "/p:__RootBinDir=$RUNTIME_ARTIFACTS_DIR/" \
+            "/p:ArtifactsDir=$RUNTIME_ARTIFACTS_DIR/" \
             /p:BuildTests=false \
             /p:RunTests=false \
             "/p:ICULibDir=$ICU_LIB_DIR" \

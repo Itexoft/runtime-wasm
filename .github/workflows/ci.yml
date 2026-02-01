@@ -296,6 +296,22 @@ jobs:
           fi
           ln -sfn "$emcache" "$cache_link"
 
+      - name: Replace emscripten system_libs.py (mt)
+        if: matrix.threads == 'true'
+        run: |
+          set -euo pipefail
+          src="$GITHUB_WORKSPACE/.github/emscripten/system_libs.py"
+          dst="$GITHUB_WORKSPACE/runtime/src/mono/browser/emsdk/upstream/emscripten/tools/system_libs.py"
+          if [[ ! -f "$src" ]]; then
+            echo "::error::replacement system_libs.py not found: $src"
+            exit 1
+          fi
+          if [[ ! -f "$dst" ]]; then
+            echo "::error::target system_libs.py not found: $dst"
+            exit 1
+          fi
+          cp -f "$src" "$dst"
+
       - name: Export emsdk environment
         run: |
           set -euo pipefail
@@ -320,6 +336,37 @@ jobs:
           echo "EM_CONFIG=$emsdk_root/.emscripten" >> "$GITHUB_ENV"
           echo "EM_CACHE=$EM_CACHE_DIR" >> "$GITHUB_ENV"
           echo "PATH=$emsdk_root/upstream/emscripten:$emsdk_root/upstream/bin:$PATH" >> "$GITHUB_ENV"
+
+      - name: Reset emscripten cache (threads)
+        if: matrix.threads == 'true'
+        run: |
+          set -euo pipefail
+          if [[ -z "${EMSDK_PATH:-}" ]]; then
+            echo "::error::EMSDK_PATH is not set"
+            exit 1
+          fi
+          if [[ -z "${EM_CACHE_DIR:-}" ]]; then
+            echo "::error::EM_CACHE_DIR is not set"
+            exit 1
+          fi
+          emcc="$EMSDK_PATH/upstream/emscripten/emcc"
+          if [[ ! -x "$emcc" ]]; then
+            echo "::error::emcc not found under EMSDK_PATH: $emcc"
+            exit 1
+          fi
+          export EM_CACHE="$EM_CACHE_DIR"
+          export EMCC_CFLAGS="-pthread -matomics -mbulk-memory"
+          export EMCC_LDFLAGS="-pthread -matomics -mbulk-memory"
+          "$emcc" --clear-cache
+          "$emcc" --clear-ports
+          rm -rf "$EM_CACHE_DIR"/*
+          mkdir -p "$EM_CACHE_DIR"
+          warmup_c="$EM_CACHE_DIR/emscripten_warmup.c"
+          cat > "$warmup_c" <<'EOF'
+          int main(void) { return 0; }
+          EOF
+          "$emcc" "$warmup_c" -o "${warmup_c%.c}.js" -pthread -matomics -mbulk-memory -s WASM_BIGINT=1
+          rm -f "$warmup_c" "${warmup_c%.c}.js" "${warmup_c%.c}.wasm"
 
       - name: Save emsdk cache
         if: env.EMSDK_VERSION != 'latest' && always() && steps.cache-emsdk.outputs.cache-hit != 'true' && steps.provision-emsdk.outcome == 'success'
@@ -363,7 +410,16 @@ jobs:
             echo "::error::ICU transport version is empty"
             exit 1
           fi
-          icu_root="$NUGET_PACKAGES/microsoft.netcore.runtime.icu.transport/$icu_version/runtimes/browser-wasm/native"
+          if [[ "${{ matrix.threads }}" == "true" ]]; then
+            icu_runtime="browser-wasm-threads"
+          else
+            icu_runtime="browser-wasm"
+          fi
+          icu_root="$NUGET_PACKAGES/microsoft.netcore.runtime.icu.transport/$icu_version/runtimes/$icu_runtime/native"
+          if [[ ! -d "$icu_root" ]]; then
+            echo "::error::ICU runtime pack not found: $icu_root"
+            exit 1
+          fi
           echo "ICU_DIR=$icu_root" >> "$GITHUB_ENV"
           echo "ICU_LIB_DIR=$icu_root/lib" >> "$GITHUB_ENV"
       - name: Validate cached runtime artifacts
@@ -417,6 +473,8 @@ jobs:
           if [[ "${{ matrix.threads }}" == "true" ]]; then
             extra_cflags="${extra_cflags} -pthread"
             extra_ld="${extra_ld} -pthread -Wno-experimental"
+            export EMCC_CFLAGS="-pthread -matomics -mbulk-memory"
+            export EMCC_LDFLAGS="-pthread -matomics -mbulk-memory"
           fi
 
           ./runtime/build.sh \

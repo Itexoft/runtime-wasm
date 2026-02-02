@@ -20,8 +20,9 @@
         <GenerateRuntimeConfigurationFiles>false</GenerateRuntimeConfigurationFiles>
         <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
         <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-        <IncludeSymbols>true</IncludeSymbols>
-        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+        <EnableSymbols>false</EnableSymbols>
+        <IncludeSymbols Condition="'$(EnableSymbols)' == 'true'">true</IncludeSymbols>
+        <SymbolPackageFormat Condition="'$(EnableSymbols)' == 'true'">snupkg</SymbolPackageFormat>
 
         <VersionFile>$(MSBuildThisFileDirectory)../../VERSION</VersionFile>
         <VersionFromFile Condition="Exists('$(VersionFile)')">$([System.IO.File]::ReadAllText('$(VersionFile)').Trim())</VersionFromFile>

@@ -1,0 +1,146 @@
+<Project Sdk="Microsoft.Build.NoTargets/3.7.134">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+        <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+        <PackageId>Itexoft.dotnet.runtime.wasm</PackageId>
+        <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+        <LangVersion>latest</LangVersion>
+        <RepositoryType>git</RepositoryType>
+        <Authors>Denis Kudelin</Authors>
+        <Company>Itexoft</Company>
+        <Copyright>$(Authors)</Copyright>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <RepositoryUrl>https://github.com/Itexoft/runtime-wasm</RepositoryUrl>
+        <PackageProjectUrl>https://github.com/Itexoft/runtime-wasm</PackageProjectUrl>
+        <Description>Prebuilt dotnet.native.wasm variants for browser-wasm.</Description>
+        <IncludeBuildOutput>false</IncludeBuildOutput>
+        <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+        <GenerateDependencyFile>false</GenerateDependencyFile>
+        <GenerateRuntimeConfigurationFiles>false</GenerateRuntimeConfigurationFiles>
+        <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+        <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+
+        <VersionFile>$(MSBuildThisFileDirectory)../../VERSION</VersionFile>
+        <VersionFromFile Condition="Exists('$(VersionFile)')">$([System.IO.File]::ReadAllText('$(VersionFile)').Trim())</VersionFromFile>
+        <Version Condition="'$(VersionFromFile)' != ''">$(VersionFromFile)</Version>
+        <PackageVersion Condition="'$(VersionFromFile)' != ''">$(VersionFromFile)</PackageVersion>
+        <AssemblyVersion Condition="'$(VersionFromFile)' != ''">$(VersionFromFile)</AssemblyVersion>
+        <FileVersion Condition="'$(VersionFromFile)' != ''">$(VersionFromFile)</FileVersion>
+
+        <ArtifactsStMm1>$(ArtifactsRoot)/runtime-wasm-st-mm1</ArtifactsStMm1>
+        <ArtifactsStMm2>$(ArtifactsRoot)/runtime-wasm-st-mm2</ArtifactsStMm2>
+        <ArtifactsMtMm1>$(ArtifactsRoot)/runtime-wasm-mt-mm1</ArtifactsMtMm1>
+        <ArtifactsMtMm2>$(ArtifactsRoot)/runtime-wasm-mt-mm2</ArtifactsMtMm2>
+    </PropertyGroup>
+
+    <Target Name="ValidateArtifactsRoot" BeforeTargets="Pack">
+        <Error Condition="'$(ArtifactsRoot)' == ''" Text="ArtifactsRoot must be set for packing." />
+        <Error Condition="!Exists('$(ArtifactsRoot)')" Text="ArtifactsRoot does not exist: $(ArtifactsRoot)" />
+    </Target>
+
+    <ItemGroup>
+        <None Include="..\..\README.md" Pack="true" PackagePath="" Link="README.md"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <RuntimeLib Include="$(ArtifactsStMm1)/lib/net10.0/*.dll" />
+        <RuntimeLib Include="$(ArtifactsStMm1)/lib/net10.0/Microsoft.NETCore.App.deps.json" />
+        <RuntimeLib Include="$(ArtifactsStMm1)/lib/net10.0/Microsoft.NETCore.App.runtimeconfig.json" />
+        <None Include="@(RuntimeLib)" Pack="true" PackagePath="runtimes/browser-wasm/lib/net10.0/%(Filename)%(Extension)" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/dotnet.native.wasm" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/dotnet.native.js" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/dotnet.native.js.symbols" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/dotnet.js" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/dotnet.runtime.js" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/dotnet.diagnostics.js" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/dotnet.js.map" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/dotnet.runtime.js.map" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/dotnet.diagnostics.js.map" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/dotnet.d.ts" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/package.json" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/System.Private.CoreLib.dll" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/wasm-bundled-timezones.a" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/libmono-*.a" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/libSystem.*.a" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/libbrotli*.a" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/libz.a" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/libicu*.a" />
+        <WasmNativeStMm1 Include="$(ArtifactsStMm1)/native/icudt*.dat" />
+        <None Include="@(WasmNativeStMm1)" Pack="true" PackagePath="runtimes/browser-wasm/native/singlethread/mm1/%(Filename)%(Extension)" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/dotnet.native.wasm" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/dotnet.native.js" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/dotnet.native.js.symbols" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/dotnet.js" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/dotnet.runtime.js" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/dotnet.diagnostics.js" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/dotnet.js.map" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/dotnet.runtime.js.map" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/dotnet.diagnostics.js.map" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/dotnet.d.ts" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/package.json" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/System.Private.CoreLib.dll" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/wasm-bundled-timezones.a" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/libmono-*.a" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/libSystem.*.a" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/libbrotli*.a" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/libz.a" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/libicu*.a" />
+        <WasmNativeStMm2 Include="$(ArtifactsStMm2)/native/icudt*.dat" />
+        <None Include="@(WasmNativeStMm2)" Pack="true" PackagePath="runtimes/browser-wasm/native/singlethread/mm2/%(Filename)%(Extension)" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/dotnet.native.wasm" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/dotnet.native.js" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/dotnet.native.js.symbols" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/dotnet.js" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/dotnet.runtime.js" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/dotnet.diagnostics.js" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/dotnet.js.map" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/dotnet.runtime.js.map" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/dotnet.diagnostics.js.map" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/dotnet.d.ts" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/package.json" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/System.Private.CoreLib.dll" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/wasm-bundled-timezones.a" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/libmono-*.a" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/libSystem.*.a" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/libbrotli*.a" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/libz.a" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/libicu*.a" />
+        <WasmNativeMtMm1 Include="$(ArtifactsMtMm1)/native/icudt*.dat" />
+        <None Include="@(WasmNativeMtMm1)" Pack="true" PackagePath="runtimes/browser-wasm/native/multithread/mm1/%(Filename)%(Extension)" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/dotnet.native.wasm" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/dotnet.native.js" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/dotnet.native.js.symbols" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/dotnet.js" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/dotnet.runtime.js" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/dotnet.diagnostics.js" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/dotnet.js.map" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/dotnet.runtime.js.map" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/dotnet.diagnostics.js.map" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/dotnet.d.ts" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/package.json" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/System.Private.CoreLib.dll" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/wasm-bundled-timezones.a" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/libmono-*.a" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/libSystem.*.a" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/libbrotli*.a" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/libz.a" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/libicu*.a" />
+        <WasmNativeMtMm2 Include="$(ArtifactsMtMm2)/native/icudt*.dat" />
+        <None Include="@(WasmNativeMtMm2)" Pack="true" PackagePath="runtimes/browser-wasm/native/multithread/mm2/%(Filename)%(Extension)" />
+    </ItemGroup>
+</Project>

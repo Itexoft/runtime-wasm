@@ -33,7 +33,7 @@ jobs:
           - name: mt-mm1
             threads: "true"
             mm: "1"
-            copy_pack: "true"
+            copy_pack: "false"
           - name: mt-mm2
             threads: "true"
             mm: "2"
@@ -433,23 +433,13 @@ jobs:
             exit 1
           fi
           if [[ "${{ matrix.copy_pack }}" == "true" ]]; then
-            pkg_dir="$RUNTIME_ARTIFACTS_DIR/packages/$CONFIG/Shipping"
-            if [[ "${{ matrix.threads }}" == "true" ]]; then
-              pkg_pattern="Microsoft.NETCore.App.Runtime.Mono.multithread.browser-wasm.*.nupkg"
-            else
-              pkg_pattern="Microsoft.NETCore.App.Runtime.Mono.browser-wasm.*.nupkg"
+            lib_dir="$RUNTIME_ARTIFACTS_DIR/bin/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes/browser-wasm/lib/net10.0"
+            if [[ ! -d "$lib_dir" ]]; then
+              echo "::error::Runtime lib directory not found: $lib_dir"
+              exit 1
             fi
-            shopt -s nullglob
-            pkgs=()
-            for candidate in "$pkg_dir"/$pkg_pattern; do
-              if [[ "$candidate" == *.symbols.nupkg ]]; then
-                continue
-              fi
-              pkgs+=("$candidate")
-            done
-            shopt -u nullglob
-            if [[ "${#pkgs[@]}" -ne 1 ]]; then
-              echo "::error::Expected exactly one runtime pack (non-symbols, $pkg_pattern) under $pkg_dir, found ${#pkgs[@]}"
+            if [[ ! -f "$lib_dir/System.Runtime.dll" ]]; then
+              echo "::error::Runtime lib missing System.Runtime.dll: $lib_dir/System.Runtime.dll"
               exit 1
             fi
           fi
@@ -575,25 +565,26 @@ jobs:
         run: |
           set -euo pipefail
           out="$GITHUB_WORKSPACE/artifacts/${{ matrix.name }}"
-          mkdir -p "$out/runtimes/browser-wasm/native"
-
           native_dir="$RUNTIME_ARTIFACTS_DIR/bin/native/net10.0-browser-$CONFIG-wasm"
-          wasm="$native_dir/dotnet.native.wasm"
-
-          suffix="st"
-          if [[ "${{ matrix.threads }}" == "true" ]]; then
-            suffix="mt"
+          if [[ ! -d "$native_dir" ]]; then
+            echo "::error::Native output directory not found: $native_dir"
+            exit 1
           fi
-
-          cp -f "$wasm" "$out/runtimes/browser-wasm/native/dotnet.native.${suffix}.dl.mm${{ matrix.mm }}.wasm"
+          mkdir -p "$out/native"
+          cp -a "$native_dir/." "$out/native/"
 
           if [[ "${{ matrix.copy_pack }}" == "true" ]]; then
-            pkg_dir="$RUNTIME_ARTIFACTS_DIR/packages/$CONFIG/Shipping"
-            if [[ "${{ matrix.threads }}" == "true" ]]; then
-              pkg_pattern="Microsoft.NETCore.App.Runtime.Mono.multithread.browser-wasm.*.nupkg"
-            else
-              pkg_pattern="Microsoft.NETCore.App.Runtime.Mono.browser-wasm.*.nupkg"
+            lib_dir="$RUNTIME_ARTIFACTS_DIR/bin/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes/browser-wasm/lib/net10.0"
+            if [[ ! -d "$lib_dir" ]]; then
+              echo "::error::Runtime lib directory not found: $lib_dir"
+              exit 1
             fi
+            out_lib="$out/lib/net10.0"
+            mkdir -p "$out_lib"
+            cp -a "$lib_dir/." "$out_lib/"
+
+            pkg_dir="$RUNTIME_ARTIFACTS_DIR/packages/$CONFIG/Shipping"
+            pkg_pattern="Microsoft.NETCore.App.Runtime.Mono.browser-wasm.*.nupkg"
             shopt -s nullglob
             pkgs=()
             for candidate in "$pkg_dir"/$pkg_pattern; do
@@ -608,65 +599,19 @@ jobs:
               exit 1
             fi
             pkg="${pkgs[0]}"
-            python3 - "$pkg" "$out" "${{ matrix.threads }}" <<'PY'
-          import os
-          import shutil
-          import sys
-          import zipfile
-
-          pkg_path = sys.argv[1]
-          out_dir = sys.argv[2]
-          is_threads = sys.argv[3].lower() == "true"
-
-          if not os.path.isfile(pkg_path):
-              print(f"::error::Runtime pack not found: {pkg_path}", file=sys.stderr)
-              sys.exit(1)
-
-          with zipfile.ZipFile(pkg_path) as zf:
-              entries = [n for n in zf.namelist() if n.startswith("runtimes/browser-wasm/")]
-              if not entries:
-                  print(f"::error::Runtime pack missing runtimes/browser-wasm in {pkg_path}", file=sys.stderr)
-                  sys.exit(1)
-              for name in entries:
-                  dest = os.path.join(out_dir, name)
-                  if name.endswith("/"):
-                      os.makedirs(dest, exist_ok=True)
-                      continue
-                  os.makedirs(os.path.dirname(dest), exist_ok=True)
-                  with zf.open(name) as src, open(dest, "wb") as dst:
-                      shutil.copyfileobj(src, dst)
-
-          if is_threads:
-              src_dir = os.path.join(out_dir, "runtimes", "browser-wasm", "native")
-              dst_dir = os.path.join(out_dir, "runtimes", "browser-wasm", "native.multithread")
-              if not os.path.isdir(src_dir):
-                  print(f"::error::Expected native runtime pack directory missing: {src_dir}", file=sys.stderr)
-                  sys.exit(1)
-              if os.path.exists(dst_dir):
-                  print(f"::error::Target multithread directory already exists: {dst_dir}", file=sys.stderr)
-                  sys.exit(1)
-              os.rename(src_dir, dst_dir)
-          PY
+            unzip -j "$pkg" \
+              "runtimes/browser-wasm/lib/net10.0/Microsoft.NETCore.App.deps.json" \
+              "runtimes/browser-wasm/lib/net10.0/Microsoft.NETCore.App.runtimeconfig.json" \
+              -d "$out_lib"
+            if [[ ! -f "$out_lib/Microsoft.NETCore.App.deps.json" ]]; then
+              echo "::error::Missing Microsoft.NETCore.App.deps.json after extract: $out_lib"
+              exit 1
+            fi
+            if [[ ! -f "$out_lib/Microsoft.NETCore.App.runtimeconfig.json" ]]; then
+              echo "::error::Missing Microsoft.NETCore.App.runtimeconfig.json after extract: $out_lib"
+              exit 1
+            fi
           fi
-
-      - name: Collect NuGet packages
-        if: matrix.copy_pack == 'true'
-        run: |
-          set -euo pipefail
-          src="$RUNTIME_ARTIFACTS_DIR/packages/$CONFIG/Shipping"
-          if [[ ! -d "$src" ]]; then
-            echo "::error::NuGet packages directory not found: $src"
-            exit 1
-          fi
-          out="$GITHUB_WORKSPACE/artifacts/nuget/${{ matrix.name }}"
-          mkdir -p "$out"
-          shopt -s nullglob
-          pkgs=("$src"/*.nupkg "$src"/*.snupkg)
-          if [[ "${#pkgs[@]}" -eq 0 ]]; then
-            echo "::error::No NuGet packages found under $src"
-            exit 1
-          fi
-          cp -f "${pkgs[@]}" "$out/"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -676,11 +621,64 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      - name: Upload NuGet packages
-        if: matrix.copy_pack == 'true'
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/input
+
+      - name: Validate downloaded artifacts
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/artifacts/input"
+          variants=(
+            "runtime-wasm-st-mm1"
+            "runtime-wasm-st-mm2"
+            "runtime-wasm-mt-mm1"
+            "runtime-wasm-mt-mm2"
+          )
+          for v in "${variants[@]}"; do
+            native_dir="$root/$v/native"
+            if [[ ! -d "$native_dir" ]]; then
+              echo "::error::Missing native artifact directory: $native_dir"
+              exit 1
+            fi
+            if [[ ! -f "$native_dir/dotnet.native.wasm" ]]; then
+              echo "::error::Missing dotnet.native.wasm in $native_dir"
+              exit 1
+            fi
+          done
+          lib_dir="$root/runtime-wasm-st-mm1/lib/net10.0"
+          if [[ ! -d "$lib_dir" ]]; then
+            echo "::error::Missing lib directory: $lib_dir"
+            exit 1
+          fi
+          if [[ ! -f "$lib_dir/System.Runtime.dll" ]]; then
+            echo "::error::Missing System.Runtime.dll in $lib_dir"
+            exit 1
+          fi
+
+      - name: Pack merged NuGet
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/artifacts/nuget"
+          mkdir -p "$out"
+          dotnet pack src/RuntimeWasm.NuGet/RuntimeWasm.NuGet.csproj -c Release -p:ArtifactsRoot="$GITHUB_WORKSPACE/artifacts/input" -o "$out"
+
+      - name: Upload merged NuGet
         uses: actions/upload-artifact@v4
         with:
-          name: runtime-wasm-nuget-${{ matrix.name }}
-          path: artifacts/nuget/${{ matrix.name }}
+          name: dotnet-wasm-packages
+          path: artifacts/nuget
           if-no-files-found: error
           retention-days: 1

@@ -10,8 +10,6 @@ env:
   RUNTIME_REPO: https://github.com/Itexoft/runtime
   RUNTIME_REF: wasm-dylink-pinvoke-10.0
   CONFIG: Release
-  EMSDK_VERSION: latest
-  WASM_OPT_MIN_VERSION: "125"
 
 jobs:
   build:
@@ -73,6 +71,14 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Install ICU headers
+        run: |
+          set -euo pipefail
+          tdnf install -y icu-devel
+          mkdir -p "$GITHUB_WORKSPACE/icu-headers/include"
+          cp -a /usr/include/unicode "$GITHUB_WORKSPACE/icu-headers/include/"
+          test -f "$GITHUB_WORKSPACE/icu-headers/include/unicode/ucurr.h"
+
       - name: Clone runtime
         run: |
           set -euo pipefail
@@ -82,40 +88,69 @@ jobs:
         id: versions
         run: |
           set -euo pipefail
-          emsdk_version="${EMSDK_VERSION}"
-          if [[ -z "${emsdk_version}" ]]; then
-            echo "::error::EMSDK_VERSION is empty"
-            exit 1
-          fi
-          runtime_commit="$(git -C runtime rev-parse HEAD)"
-          if [[ -z "$runtime_commit" ]]; then
-            echo "::error::Failed to resolve runtime commit"
-            exit 1
-          fi
-          icu_transport="$(python3 - <<'PY'
+          emsdk_version="$(python3 - <<'PY'
           import sys
           import xml.etree.ElementTree as ET
-          path = "runtime/eng/Version.Details.props"
+          path = "runtime/eng/Versions.props"
           try:
               root = ET.parse(path).getroot()
           except Exception as e:
               print(f"::error::Failed to parse {path}: {e}", file=sys.stderr)
               sys.exit(1)
-          version = ""
-          for prop in root.iter():
-              if prop.tag.endswith("MicrosoftNETCoreRuntimeICUTransportPackageVersion"):
-                  version = (prop.text or "").strip()
+          value = None
+          for elem in root.iter():
+              tag = elem.tag
+              if tag.endswith('EmsdkVersion'):
+                  value = (elem.text or '').strip()
                   break
-          if not version:
-              print("::error::ICU transport package version not found in Version.Details.props", file=sys.stderr)
+          if not value:
+              print(f"::error::EmsdkVersion not found or empty in {path}", file=sys.stderr)
               sys.exit(1)
-          print(version)
+          print(value)
+          PY
+          )"
+          if [[ -z "$emsdk_version" ]]; then
+            echo "::error::EmsdkVersion is empty in runtime/eng/Versions.props"
+            exit 1
+          fi
+          echo "EMSDK_VERSION=$emsdk_version" >> "$GITHUB_ENV"
+          wasm_opt_min_version=""
+          case "$emsdk_version" in
+            3.1.56) wasm_opt_min_version="117" ;;
+            *) echo "::error::Unsupported emsdk version for wasm-opt min version: $emsdk_version"; exit 1 ;;
+          esac
+          echo "WASM_OPT_MIN_VERSION=$wasm_opt_min_version" >> "$GITHUB_ENV"
+          runtime_commit="$(git -C runtime rev-parse HEAD)"
+          if [[ -z "$runtime_commit" ]]; then
+            echo "::error::Failed to resolve runtime commit"
+            exit 1
+          fi
+          icu_sha="$(python3 - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          path = "runtime/eng/Version.Details.xml"
+          try:
+              root = ET.parse(path).getroot()
+          except Exception as e:
+              print(f"::error::Failed to parse {path}: {e}", file=sys.stderr)
+              sys.exit(1)
+          deps = []
+          for d in root.findall(".//Dependency"):
+              name = d.get("Name", "")
+              if name.startswith("Microsoft.NETCore.Runtime.ICU"):
+                  sha = (d.findtext("Sha") or d.get("Sha") or "").strip()
+                  deps.append((name, sha))
+          if len(deps) != 1 or not deps[0][1]:
+              print("::error::ICU dependency not found or SHA missing in Version.Details.xml", file=sys.stderr)
+              for name, sha in deps:
+                  print(f"::error::ICU dependency: {name} sha={sha}", file=sys.stderr)
+              sys.exit(1)
+          print(deps[0][1])
           PY
           )"
           echo "emsdk=$emsdk_version" >> "$GITHUB_OUTPUT"
           echo "runtime_commit=$runtime_commit" >> "$GITHUB_OUTPUT"
-          echo "icu=$icu_transport" >> "$GITHUB_OUTPUT"
-
+          echo "icu=$icu_sha" >> "$GITHUB_OUTPUT"
       - name: Select local build roots
         id: roots
         run: |
@@ -405,34 +440,288 @@ jobs:
           mkdir -p "$EM_CACHE_DIR"
           mkdir -p "$RUNTIME_ARTIFACTS_DIR"
 
-      - name: Restore ICU transport package
+      - name: Clone ICU
         run: |
           set -euo pipefail
-          dotnet restore runtime/src/mono/browser/browser.proj \
-            /p:WasmEnableThreads=${{ matrix.threads }} \
-            /p:BuildTests=false \
-            /p:RunTests=false
+          icu_sha="${{ steps.versions.outputs.icu }}"
+          git clone https://github.com/dotnet/icu icu
+          git -C icu checkout "${icu_sha}"
 
-      - name: Resolve ICU transport pack
+      - name: Restore ICU artifacts cache
+        id: cache-icu
+        uses: actions/cache/restore@v4
+        with:
+          path: icu/artifacts
+          key: icu-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ steps.versions.outputs.icu }}-${{ steps.versions.outputs.emsdk }}-${{ env.CONFIG }}-pic2-pkgdata-threads-${{ matrix.threads }}
+
+      - name: Restore ICU stage
+        id: cache-icu-stage
+        uses: actions/cache/restore@v4
+        with:
+          path: icu-stage
+          key: icu-stage-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ steps.versions.outputs.icu }}-${{ steps.versions.outputs.emsdk }}-${{ env.CONFIG }}-pic2-pkgdata-threads-${{ matrix.threads }}
+
+      - name: Validate cached ICU stage
+        if: steps.cache-icu-stage.outputs.cache-hit == 'true'
         run: |
           set -euo pipefail
-          icu_version="${{ steps.versions.outputs.icu }}"
-          if [[ -z "$icu_version" ]]; then
-            echo "::error::ICU transport version is empty"
+          icu_stage="$GITHUB_WORKSPACE/icu-stage"
+          if [[ ! -d "$icu_stage" ]]; then
+            echo "::error::ICU stage cache hit but directory is missing: $icu_stage"
             exit 1
           fi
-          if [[ "${{ matrix.threads }}" == "true" ]]; then
-            icu_runtime="browser-wasm-threads"
+          for f in libicuuc.a libicui18n.a libicudata.a; do
+            if [[ ! -f "$icu_stage/lib/$f" ]]; then
+              echo "::error::Missing ICU lib in cached stage: $icu_stage/lib/$f"
+              exit 1
+            fi
+          done
+          if [[ ! -d "$icu_stage/include/unicode" ]]; then
+            echo "::error::Missing ICU headers in cached stage: $icu_stage/include/unicode"
+            exit 1
+          fi
+          if [[ ! -f "$icu_stage/include/unicode/ucurr.h" ]]; then
+            echo "::error::ICU header ucurr.h missing in cached stage: $icu_stage/include/unicode/ucurr.h"
+            exit 1
+          fi
+          if ! compgen -G "$icu_stage/lib/*.dat" > /dev/null; then
+            echo "::error::Missing ICU data files in cached stage: $icu_stage/lib"
+            exit 1
+          fi
+          echo "ICU_DIR=$icu_stage" >> "$GITHUB_ENV"
+          echo "ICU_LIB_DIR=$icu_stage/lib" >> "$GITHUB_ENV"
+
+      - name: Patch ICU CFLAGS for PIC
+        run: |
+          set -euo pipefail
+          mk="$GITHUB_WORKSPACE/icu/eng/icu.browser.mk"
+          if [[ ! -f "$mk" ]]; then
+            echo "::error::icu.browser.mk not found: $mk"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import re,sys
+          path = "icu/eng/icu.browser.mk"
+          text = open(path, encoding="utf-8").read()
+          def add_pic(line):
+              if "-fPIC" in line:
+                  return line
+              return line.replace("-Wno-sign-compare", "-Wno-sign-compare -fPIC")
+          new_lines = []
+          changed = False
+          for line in text.splitlines(True):
+              if line.lstrip().startswith("CFLAGS="):
+                  new_line = add_pic(line)
+                  changed |= (new_line != line)
+                  new_lines.append(new_line)
+              elif line.lstrip().startswith("CXXFLAGS="):
+                  new_line = add_pic(line)
+                  changed |= (new_line != line)
+                  new_lines.append(new_line)
+              else:
+                  new_lines.append(line)
+          new_text = "".join(new_lines)
+          if new_text == text:
+              if "CFLAGS=" in text and "-fPIC" in text and "CXXFLAGS=" in text and "-fPIC" in text:
+                  sys.exit(0)
+              print("::error::Failed to inject -fPIC into icu.browser.mk", file=sys.stderr)
+              sys.exit(1)
+          with open(path, "w", encoding="utf-8") as f:
+              f.write(new_text)
+          if "-fPIC" not in new_text:
+              print("::error::icu.browser.mk does not contain -fPIC after patch", file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Override ICU build files
+        run: |
+          set -euo pipefail
+          override_pkg="$GITHUB_WORKSPACE/.github/icu-overrides/pkgdataMakefile.in"
+          target_pkg="$GITHUB_WORKSPACE/icu/icu/icu4c/source/config/pkgdataMakefile.in"
+          if [[ ! -f "$override_pkg" ]]; then
+            echo "::error::ICU override not found: $override_pkg"
+            exit 1
+          fi
+          if [[ ! -f "$target_pkg" ]]; then
+            echo "::error::ICU target pkgdataMakefile.in not found: $target_pkg"
+            exit 1
+          fi
+          cp -f "$override_pkg" "$target_pkg"
+
+          override_proj="$GITHUB_WORKSPACE/.github/icu-overrides/icu.proj"
+          target_proj="$GITHUB_WORKSPACE/icu/eng/icu.proj"
+          if [[ ! -f "$override_proj" ]]; then
+            echo "::error::ICU override not found: $override_proj"
+            exit 1
+          fi
+          if [[ ! -f "$target_proj" ]]; then
+            echo "::error::ICU target icu.proj not found: $target_proj"
+            exit 1
+          fi
+          cp -f "$override_proj" "$target_proj"
+
+      - name: Link ICU emsdk to runtime emsdk
+        run: |
+          set -euo pipefail
+          runtime_emsdk="$GITHUB_WORKSPACE/runtime/src/mono/browser/emsdk"
+          if [[ ! -f "$runtime_emsdk/emsdk_env.sh" ]]; then
+            echo "::error::runtime emsdk_env.sh not found: $runtime_emsdk/emsdk_env.sh"
+            exit 1
+          fi
+          icu_emsdk="$GITHUB_WORKSPACE/icu/artifacts/obj/emsdk"
+          mkdir -p "$(dirname "$icu_emsdk")"
+          if [[ -e "$icu_emsdk" && ! -L "$icu_emsdk" ]]; then
+            rm -rf "$icu_emsdk"
+          fi
+          ln -sfn "$runtime_emsdk" "$icu_emsdk"
+          if [[ ! -f "$icu_emsdk/emsdk_env.sh" ]]; then
+            echo "::error::icu emsdk link invalid: $icu_emsdk/emsdk_env.sh"
+            exit 1
+          fi
+
+      - name: Build ICU (PIC)
+        id: build-icu
+        if: steps.cache-icu-stage.outputs.cache-hit != 'true'
+        env:
+          EXTRA_CFLAGS: "-fPIC"
+          EXTRA_CXXFLAGS: "-fPIC"
+          CFLAGS: "-fPIC"
+          CXXFLAGS: "-fPIC"
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/runtime/src/mono/browser/emsdk/emsdk_env.sh"
+          export EM_CACHE="$GITHUB_WORKSPACE/emscripten-cache"
+          mkdir -p "$EM_CACHE"
+          icu_base="$GITHUB_WORKSPACE/icu/artifacts/bin/icu-browser-wasm"
+          icu_src_cfg="$icu_base/$CONFIG/runtimes/browser-wasm/native"
+          icu_src_flat="$icu_base/runtimes/browser-wasm/native"
+          icu_has_libs=0
+          if [[ -f "$icu_base/lib/libicuuc.a" ]]; then
+            icu_has_libs=1
+          elif [[ -f "$icu_src_cfg/lib/libicuuc.a" ]]; then
+            icu_has_libs=1
+          elif [[ -f "$icu_src_flat/lib/libicuuc.a" ]]; then
+            icu_has_libs=1
+          elif [[ -f "$icu_src_cfg/libicuuc.a" ]]; then
+            icu_has_libs=1
+          elif [[ -f "$icu_src_flat/libicuuc.a" ]]; then
+            icu_has_libs=1
+          fi
+
+          if [[ "$icu_has_libs" -ne 1 ]]; then
+            pushd icu
+            ./build.sh /p:TargetOS=Browser /p:TargetArchitecture=wasm /p:Configuration=$CONFIG /p:WasmEnableThreads=${{ matrix.threads }} /p:ExtraCFlags=-fPIC /p:ExtraCxxFlags=-fPIC
+            popd
+          fi
+
+          icu_src=""
+          icu_layout=""
+          if [[ -d "$icu_src_cfg" ]]; then
+            icu_src="$icu_src_cfg"
+            icu_layout="native"
+          elif [[ -d "$icu_src_flat" ]]; then
+            icu_src="$icu_src_flat"
+            icu_layout="native"
+          elif [[ -d "$icu_base/lib" ]]; then
+            icu_src="$icu_base"
+            icu_layout="base"
           else
-            icu_runtime="browser-wasm"
-          fi
-          icu_root="$NUGET_PACKAGES/microsoft.netcore.runtime.icu.transport/$icu_version/runtimes/$icu_runtime/native"
-          if [[ ! -d "$icu_root" ]]; then
-            echo "::error::ICU runtime pack not found: $icu_root"
+            echo "::error::ICU output not found. Expected one of:"
+            echo "  $icu_src_cfg"
+            echo "  $icu_src_flat"
+            echo "  $icu_base (with lib/)"
+            ls -la "$icu_base" || true
             exit 1
           fi
-          echo "ICU_DIR=$icu_root" >> "$GITHUB_ENV"
-          echo "ICU_LIB_DIR=$icu_root/lib" >> "$GITHUB_ENV"
+
+          icu_stage="$GITHUB_WORKSPACE/icu-stage"
+          if [[ -e "$icu_stage" ]]; then
+            echo "::error::ICU stage already exists: $icu_stage"
+            exit 1
+          fi
+          mkdir -p "$icu_stage/lib"
+          mkdir -p "$icu_stage/include"
+
+          if [[ "$icu_layout" == "base" ]]; then
+            cp -f "$icu_src/lib/libicuuc.a" "$icu_stage/lib/"
+            cp -f "$icu_src/lib/libicui18n.a" "$icu_stage/lib/"
+            cp -f "$icu_src/lib/libicudata.a" "$icu_stage/lib/"
+            cp -f "$icu_src/"*.dat "$icu_stage/lib/"
+          else
+            if [[ -d "$icu_src/lib" ]]; then
+              cp -f "$icu_src/lib/libicuuc.a" "$icu_stage/lib/"
+              cp -f "$icu_src/lib/libicui18n.a" "$icu_stage/lib/"
+              cp -f "$icu_src/lib/libicudata.a" "$icu_stage/lib/"
+              cp -f "$icu_src/lib/"*.dat "$icu_stage/lib/"
+            else
+              cp -f "$icu_src/libicuuc.a" "$icu_stage/lib/"
+              cp -f "$icu_src/libicui18n.a" "$icu_stage/lib/"
+              cp -f "$icu_src/libicudata.a" "$icu_stage/lib/"
+              cp -f "$icu_src/"*.dat "$icu_stage/lib/"
+            fi
+          fi
+
+          for f in libicuuc.a libicui18n.a libicudata.a; do
+            if [[ ! -f "$icu_stage/lib/$f" ]]; then
+              echo "::error::Missing ICU lib: $icu_stage/lib/$f"
+              exit 1
+            fi
+          done
+          if [[ ! -d "$GITHUB_WORKSPACE/icu-headers/include/unicode" ]]; then
+            echo "::error::ICU headers not found: $GITHUB_WORKSPACE/icu-headers/include/unicode"
+            exit 1
+          fi
+          cp -a "$GITHUB_WORKSPACE/icu-headers/include/unicode" "$icu_stage/include/"
+          if [[ ! -f "$icu_stage/include/unicode/ucurr.h" ]]; then
+            echo "::error::ICU header ucurr.h missing in stage: $icu_stage/include/unicode/ucurr.h"
+            exit 1
+          fi
+          if ! compgen -G "$icu_stage/lib/*.dat" > /dev/null; then
+            echo "::error::Missing ICU data files in $icu_stage/lib"
+            exit 1
+          fi
+
+          echo "ICU_DIR=$icu_stage" >> "$GITHUB_ENV"
+          echo "ICU_LIB_DIR=$icu_stage/lib" >> "$GITHUB_ENV"
+
+
+      - name: Dump ICU config.log
+        if: always() && steps.build-icu.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          log="$GITHUB_WORKSPACE/icu/artifacts/obj/icu-browser-wasm/icudt_wasm/config.log"
+          if [[ ! -f "$log" ]]; then
+            echo "::error::ICU config.log not found: $log"
+            exit 1
+          fi
+          echo "::group::ICU config.log (compiler check)"
+          line="$(grep -n "C compiler cannot create executables" "$log" | head -n 1 | cut -d: -f1 || true)"
+          if [[ -n "$line" ]]; then
+            start=$((line-120))
+            if (( start < 1 )); then
+              start=1
+            fi
+            end=$((line+20))
+            sed -n "${start},${end}p" "$log"
+          else
+            grep -n "conftest" "$log" | tail -n 50 || true
+            tail -n 200 "$log"
+          fi
+          echo "::endgroup::"
+      - name: Save ICU artifacts cache
+        if: always() && steps.cache-icu.outputs.cache-hit != 'true' && steps.build-icu.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: icu/artifacts
+          key: icu-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ steps.versions.outputs.icu }}-${{ steps.versions.outputs.emsdk }}-${{ env.CONFIG }}-pic2-pkgdata-threads-${{ matrix.threads }}
+
+      - name: Save ICU stage cache
+        if: always() && steps.cache-icu-stage.outputs.cache-hit != 'true' && steps.build-icu.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: icu-stage
+          key: icu-stage-${{ runner.os }}-v${{ steps.version.outputs.value }}-${{ steps.versions.outputs.icu }}-${{ steps.versions.outputs.emsdk }}-${{ env.CONFIG }}-pic2-pkgdata-threads-${{ matrix.threads }}
+
       - name: Validate cached runtime artifacts
         if: steps.cache-runtime.outputs.cache-hit == 'true'
         run: |

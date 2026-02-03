@@ -1,0 +1,91 @@
+<Project Sdk="Microsoft.Build.Traversal">
+  <ItemGroup Condition="'$(TargetOS)' == 'Browser'">
+    <PackageReference Include="Microsoft.NET.Runtime.Emscripten.3.1.56.Cache.linux-x64" Version="$(MicrosoftNETRuntimeEmscripten3156Cachelinuxx64Version)" />
+    <PackageReference Include="Microsoft.NET.Runtime.Emscripten.3.1.56.Node.linux-x64" Version="$(MicrosoftNETRuntimeEmscripten3156Nodelinuxx64Version)" />
+    <PackageReference Include="Microsoft.NET.Runtime.Emscripten.3.1.56.Sdk.linux-x64" Version="$(MicrosoftNETRuntimeEmscripten3156Sdklinuxx64Version)" />
+  </ItemGroup>
+
+  <Target Name="CopyEmsdkToTree" BeforeTargets="ReallyBuild" Condition="'$(TargetOS)' == 'Browser' and '$(DOTNET_EMSCRIPTEN_LLVM_ROOT)' == ''">
+    <ItemGroup>
+      <EmsdkFiles Include="$(NuGetPackageRoot)\$([System.String]::Copy(%(PackageReference.Identity)).ToLowerInvariant())\%(PackageReference.Version)\tools\**" />
+    </ItemGroup>
+    <Copy SourceFiles="@(EmsdkFiles)" DestinationFolder="$(MonoEmsdkDir)\%(RecursiveDir)">
+      <Output TaskParameter="DestinationFiles" ItemName="FileWrites"/>
+    </Copy>
+  </Target>
+
+
+  <Target Name="ReallyBuild" BeforeTargets="Build" Condition="'$(PackOnly)' != 'true'" DependsOnTargets="PatchEmscripten;CopyEmscriptenVersion;DownloadWasiSdk">
+    <Error Condition="'$(TargetOS)' == ''" Text="TargetOS needs to be specified!" />
+    <Error Condition="'$(TargetArchitecture)' == ''" Text="TargetArchitecture needs to be specified!" />
+    <Error Condition="'$(TargetOS)' == 'Browser' and '$(DOTNET_EMSCRIPTEN_LLVM_ROOT)' == ''" Text="DOTNET_EMSCRIPTEN_LLVM_ROOT must be set for Browser builds." />
+
+    <PropertyGroup>
+      <_ExtraParams Condition="'$(WasmEnableThreads)' == 'true'">WASM_ENABLE_THREADS=true</_ExtraParams>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(TargetOS)' == 'Browser'">
+      <_EmsdkRoot>$(MonoEmsdkDir)</_EmsdkRoot>
+      <_EmsdkLlvmRoot Condition="'$(DOTNET_EMSCRIPTEN_LLVM_ROOT)' != ''">$(DOTNET_EMSCRIPTEN_LLVM_ROOT)</_EmsdkLlvmRoot>
+      <_EmsdkLlvmRoot Condition="'$(DOTNET_EMSCRIPTEN_LLVM_ROOT)' == ''">$(_EmsdkRoot)/bin/</_EmsdkLlvmRoot>
+      <_EmsdkNode Condition="'$(DOTNET_EMSCRIPTEN_NODE_JS)' != ''">$(DOTNET_EMSCRIPTEN_NODE_JS)</_EmsdkNode>
+      <_EmsdkNode Condition="'$(DOTNET_EMSCRIPTEN_NODE_JS)' == ''">$(_EmsdkRoot)/bin/node</_EmsdkNode>
+      <_EmsdkBinaryenRoot Condition="'$(DOTNET_EMSCRIPTEN_BINARYEN_ROOT)' != ''">$(DOTNET_EMSCRIPTEN_BINARYEN_ROOT)</_EmsdkBinaryenRoot>
+      <_EmsdkBinaryenRoot Condition="'$(DOTNET_EMSCRIPTEN_BINARYEN_ROOT)' == ''">$(_EmsdkRoot)/</_EmsdkBinaryenRoot>
+      <_EmsdkPath>$([System.IO.Path]::GetFullPath('$(DOTNET_EMSCRIPTEN_LLVM_ROOT)/../..'))</_EmsdkPath>
+      <_ExtraParams>$(_ExtraParams) DOTNET_EMSCRIPTEN_LLVM_ROOT=$(_EmsdkLlvmRoot)</_ExtraParams>
+      <_ExtraParams>$(_ExtraParams) DOTNET_EMSCRIPTEN_NODE_JS=$(_EmsdkNode)</_ExtraParams>
+      <_ExtraParams>$(_ExtraParams) DOTNET_EMSCRIPTEN_BINARYEN_ROOT=$(_EmsdkBinaryenRoot)</_ExtraParams>
+      <_ExtraParams>$(_ExtraParams) EMSDK_PATH=$(_EmsdkPath)</_ExtraParams>
+    </PropertyGroup>
+
+    <!-- Set WASI sdk path if WASI_SDK_PATH env variable is not set -->
+    <PropertyGroup Condition="'$(TargetOS)' == 'Wasi' and '$(WASI_SDK_PATH)' == ''">
+      <WASI_SDK_PATH Condition="'$(WASI_SDK_PATH)' == ''">$(RepoRoot)artifacts/wasi-sdk</WASI_SDK_PATH>
+    </PropertyGroup>
+
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)\..\icu-filters\curr-root.txt" 
+          DestinationFiles="$(MSBuildThisFileDirectory)\..\icu\icu4c\source\data\curr\root.txt"/> 
+    <Exec WorkingDirectory="$(MSBuildThisFileDirectory)"
+          Command="make -f icu.mk all TARGET_OS=$(TargetOS.ToLower()) TARGET_ARCHITECTURE=$(TargetArchitecture) ICU_TRACING=$(IcuTracing) WASI_SDK_PATH=$(WASI_SDK_PATH) $(_ExtraParams) SHELL=/bin/bash"
+          IgnoreStandardErrorWarningFormat="true" />
+  </Target>
+  <Target Name="Test" />
+  <Target Name="ReallyPack" DependsOnTargets="ReallyBuild" BeforeTargets="Pack">
+    <MSBuild Projects="$(MSBuildThisFileDirectory)nuget\Microsoft.NETCore.Runtime.ICU.Transport.pkgproj" Targets="Build" />
+  </Target>
+
+  <!-- 
+    The version of emscripten we are on, emcmake does not pass 'experimental-wasm-threads' to node. In order for the build to  
+    succeed, we need to provide a patched version of that file. Ideally, fixing upstream would be best, but until then, patch.
+  -->
+  <Target Name="PatchEmscripten" Condition="'$(TargetOS)' == 'Browser' and '$(WasmEnableThreads)' == 'true' and '$(DOTNET_EMSCRIPTEN_LLVM_ROOT)' == ''">
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)patches\emcc.py"
+          DestinationFolder="$(MonoEmsdkDir)\emscripten" />
+  </Target>
+  <Target Name="CopyEmscriptenVersion" Condition="'$(TargetOS)' == 'Browser' and '$(DOTNET_EMSCRIPTEN_LLVM_ROOT)' == ''">
+    <ReadLinesFromFile File="$(MonoEmsdkDir)\emscripten\emscripten-version.txt" >
+      <Output TaskParameter="Lines"
+              ItemName="_ItemsFromEmscriptenVersionFile"/>
+    </ReadLinesFromFile>
+    <WriteLinesToFile
+            File="$(RepoRoot)\artifacts\bin\icu-browser-wasm\emscripten-version.txt"
+            Lines="@(_ItemsFromEmscriptenVersionFile->Replace('&quot;', ''))"
+            Overwrite="true" />
+  </Target>
+
+  <!-- Download WASI sdk if WASI_SDK_PATH env variable is not set -->
+  <Target Name="DownloadWasiSdk" Condition="'$(TargetOS)' == 'Wasi'  and '$(WASI_SDK_PATH)' == ''">
+    <PropertyGroup>
+      <_WasiLocalPath>$(RepoRoot)\artifacts</_WasiLocalPath>
+      <_WasiSdkUrl Condition="$([MSBuild]::IsOSPlatform('Linux'))">https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-$(WasiSdkVersion)/wasi-sdk-$(WasiSdkVersion).0-linux.tar.gz</_WasiSdkUrl>
+      <_WasiSdkUrl Condition="$([MSBuild]::IsOSPlatform('OSX'))">https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-$(WasiSdkVersion)/wasi-sdk-$(WasiSdkVersion).0-macos.tar.gz</_WasiSdkUrl>
+    </PropertyGroup>
+
+    <Error Condition="'$(_WasiSdkUrl)' == ''" Text="_WasiSdkUrl is not set!" />
+
+    <Exec Command="rm -rf wasi-sdk-*/ wasi-sdk/ &amp;&amp; curl -L -o- $(_WasiSdkUrl) --fail -S | tar -xvz &amp;&amp; mv wasi-sdk-$(WasiSdkVersion).*/ wasi-sdk/"
+          WorkingDirectory="$(_WasiLocalPath)"
+          IgnoreStandardErrorWarningFormat="true" />
+  </Target>
+</Project>

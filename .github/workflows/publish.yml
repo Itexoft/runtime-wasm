@@ -20,9 +20,10 @@ jobs:
     needs: ci
     uses: Itexoft/devops/.github/workflows/publish-release.yml@master
     with:
-      branch: master
+      branch: ${{ github.ref_name }}
       run-id: ${{ needs.ci.outputs.run-id }}
       artifact-name: dotnet-wasm-packages
+      version: ${{ needs.ci.outputs.package-version }}
       tag-prefix: v
       generate-notes: false
       allow-version-mismatch: false
@@ -32,9 +33,10 @@ jobs:
     needs: ci
     uses: Itexoft/devops/.github/workflows/publish-package.yml@master
     with:
-      branch: master
+      branch: ${{ github.ref_name }}
       run-id: ${{ needs.ci.outputs.run-id }}
       artifact-name: dotnet-wasm-packages
+      version: ${{ needs.ci.outputs.package-version }}
       allow-version-mismatch: false
     secrets: inherit
 
@@ -42,9 +44,10 @@ jobs:
     needs: ci
     uses: Itexoft/devops/.github/workflows/publish-nuget.yml@master
     with:
-      branch: master
+      branch: ${{ github.ref_name }}
       run-id: ${{ needs.ci.outputs.run-id }}
       artifact-name: dotnet-wasm-packages
+      version: ${{ needs.ci.outputs.package-version }}
       source: https://api.nuget.org/v3/index.json
       allow-version-mismatch: false
     secrets: inherit

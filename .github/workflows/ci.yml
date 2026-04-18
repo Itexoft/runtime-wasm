@@ -1,5 +1,13 @@
 name: Build WASM Artifacts (Clean)
 on:
+  workflow_call:
+    outputs:
+      run-id:
+        description: Workflow run ID for published artifacts
+        value: ${{ jobs.package.outputs.run-id }}
+      package-version:
+        description: Effective package version used during packing
+        value: ${{ jobs.package.outputs.package-version }}
   workflow_dispatch:
   push:
     branches: [ master, main ]
@@ -10,6 +18,7 @@ env:
   RUNTIME_REPO: https://github.com/Itexoft/runtime
   RUNTIME_REF: wasm-dylink-pinvoke-10.0
   CONFIG: Release
+  NUGET_SOURCE: https://api.nuget.org/v3/index.json
 
 jobs:
   build:
@@ -901,6 +910,20 @@ jobs:
             echo "::error::Native output directory not found: $native_dir"
             exit 1
           fi
+          required_native_files=(
+            "dotnet.js"
+            "dotnet.runtime.js"
+            "dotnet.native.js"
+            "dotnet.native.wasm"
+            "src/emcc-link.rsp"
+            "include/wasm/pinvoke.h"
+          )
+          for required in "${required_native_files[@]}"; do
+            if [[ ! -e "$native_dir/$required" ]]; then
+              echo "::error::Missing required native output: $native_dir/$required"
+              exit 1
+            fi
+          done
           mkdir -p "$out/native"
           cp -a "$native_dir/." "$out/native/"
 
@@ -925,23 +948,43 @@ jobs:
           fi
           pkg="${pkgs[0]}"
           if ! command -v unzip >/dev/null 2>&1; then
-            echo "::error::unzip is required to extract System.Private.CoreLib.dll"
+            echo "::error::unzip is required to extract runtime pack files"
             exit 1
           fi
-          unzip -j "$pkg" \
-            "runtimes/browser-wasm/native/System.Private.CoreLib.dll" \
-            -d "$out/native"
-          unzip -j "$pkg" \
-            "runtimes/browser-wasm/native/libmono-*.a" \
-            -d "$out/native"
+          runtime_native_glob="runtimes/browser-wasm/native/*"
+          extracted_root="$(mktemp -d)"
+          unzip -q "$pkg" \
+            "$runtime_native_glob" \
+            -d "$extracted_root"
+          extracted_native_dir="$extracted_root/runtimes/browser-wasm/native"
+          while IFS= read -r -d '' extracted_file; do
+            relative_path="${extracted_file#"$extracted_native_dir"/}"
+            destination_path="$out/native/$relative_path"
+            destination_dir="$(dirname "$destination_path")"
+            mkdir -p "$destination_dir"
+            if [[ ! -e "$destination_path" ]]; then
+              cp -a "$extracted_file" "$destination_path"
+            fi
+          done < <(find "$extracted_native_dir" -type f -print0)
+          rm -rf "$extracted_root"
           if [[ ! -f "$out/native/System.Private.CoreLib.dll" ]]; then
             echo "::error::Missing System.Private.CoreLib.dll after extract: $out/native/System.Private.CoreLib.dll"
             exit 1
           fi
-          if ! ls "$out/native"/libmono-*.a >/dev/null 2>&1; then
-            echo "::error::Missing libmono-*.a after extract: $out/native"
-            exit 1
-          fi
+          preserved_native_files=(
+            "dotnet.js"
+            "dotnet.runtime.js"
+            "dotnet.native.js"
+            "dotnet.native.wasm"
+            "src/emcc-link.rsp"
+            "include/wasm/pinvoke.h"
+          )
+          for preserved in "${preserved_native_files[@]}"; do
+            if ! cmp -s "$native_dir/$preserved" "$out/native/$preserved"; then
+              echo "::error::Native artifact was overwritten while merging runtime pack: $preserved"
+              exit 1
+            fi
+          done
 
           if [[ "${{ matrix.copy_pack }}" == "true" ]]; then
             lib_dir="$RUNTIME_ARTIFACTS_DIR/bin/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes/browser-wasm/lib/net10.0"
@@ -969,9 +1012,9 @@ jobs:
               exit 1
             fi
             pkg="${pkgs[0]}"
-            unzip -j "$pkg" \
-              "runtimes/browser-wasm/lib/net10.0/Microsoft.NETCore.App.deps.json" \
-              "runtimes/browser-wasm/lib/net10.0/Microsoft.NETCore.App.runtimeconfig.json" \
+            runtime_lib_glob="runtimes/browser-wasm/lib/net10.0/*"
+            unzip -jo "$pkg" \
+              "$runtime_lib_glob" \
               -d "$out_lib"
             if [[ ! -f "$out_lib/Microsoft.NETCore.App.deps.json" ]]; then
               echo "::error::Missing Microsoft.NETCore.App.deps.json after extract: $out_lib"
@@ -994,8 +1037,22 @@ jobs:
   package:
     needs: build
     runs-on: ubuntu-latest
+    outputs:
+      run-id: ${{ steps.run-info.outputs.run-id }}
+      package-version: ${{ steps.package-version.outputs.value }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Read VERSION
+        id: version
+        run: |
+          set -euo pipefail
+          v="$(cat VERSION)"
+          if [[ -z "$v" ]]; then
+            echo "::error::VERSION is empty"
+            exit 1
+          fi
+          echo "value=$v" >> "$GITHUB_OUTPUT"
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -1023,12 +1080,32 @@ jobs:
               echo "::error::Missing native artifact directory: $native_dir"
               exit 1
             fi
+            if [[ ! -f "$native_dir/dotnet.js" ]]; then
+              echo "::error::Missing dotnet.js in $native_dir"
+              exit 1
+            fi
+            if [[ ! -f "$native_dir/dotnet.runtime.js" ]]; then
+              echo "::error::Missing dotnet.runtime.js in $native_dir"
+              exit 1
+            fi
             if [[ ! -f "$native_dir/dotnet.native.wasm" ]]; then
               echo "::error::Missing dotnet.native.wasm in $native_dir"
               exit 1
             fi
             if [[ ! -f "$native_dir/System.Private.CoreLib.dll" ]]; then
               echo "::error::Missing System.Private.CoreLib.dll in $native_dir"
+              exit 1
+            fi
+            if [[ ! -f "$native_dir/src/emcc-link.rsp" ]]; then
+              echo "::error::Missing src/emcc-link.rsp in $native_dir"
+              exit 1
+            fi
+            if [[ ! -f "$native_dir/include/mono-2.0/mono/metadata/appdomain.h" ]]; then
+              echo "::error::Missing include/mono-2.0/mono/metadata/appdomain.h in $native_dir"
+              exit 1
+            fi
+            if [[ ! -f "$native_dir/include/wasm/pinvoke.h" ]]; then
+              echo "::error::Missing include/wasm/pinvoke.h in $native_dir"
               exit 1
             fi
           done
@@ -1042,12 +1119,41 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve package version
+        id: package-version
+        run: |
+          set -euo pipefail
+          effective_version="$(python3 .github/scripts/resolve_nuget_package_version.py \
+            --project src/RuntimeWasm.NuGet/RuntimeWasm.NuGet.csproj \
+            --base-version "${{ steps.version.outputs.value }}" \
+            --source "${NUGET_SOURCE}")"
+          if [[ -z "$effective_version" ]]; then
+            echo "::error::Effective package version is empty"
+            exit 1
+          fi
+          echo "value=$effective_version" >> "$GITHUB_OUTPUT"
+          echo "Resolved package version: $effective_version"
+
+      - name: Export run info
+        id: run-info
+        run: |
+          set -euo pipefail
+          echo "run-id=${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+
       - name: Pack merged NuGet
         run: |
           set -euo pipefail
           out="$GITHUB_WORKSPACE/artifacts/nuget"
           mkdir -p "$out"
-          dotnet pack src/RuntimeWasm.NuGet/RuntimeWasm.NuGet.csproj -c Release -p:ArtifactsRoot="$GITHUB_WORKSPACE/artifacts/input" -o "$out"
+          version="${{ steps.package-version.outputs.value }}"
+          dotnet pack src/RuntimeWasm.NuGet/RuntimeWasm.NuGet.csproj \
+            -c Release \
+            -p:ArtifactsRoot="$GITHUB_WORKSPACE/artifacts/input" \
+            -p:Version="$version" \
+            -p:PackageVersion="$version" \
+            -p:AssemblyVersion="$version" \
+            -p:FileVersion="$version" \
+            -o "$out"
 
       - name: Upload merged NuGet
         uses: actions/upload-artifact@v4

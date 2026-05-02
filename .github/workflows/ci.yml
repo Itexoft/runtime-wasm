@@ -33,18 +33,26 @@ jobs:
             threads: "false"
             mm: "1"
             copy_pack: "true"
+            runtime_pack_bin: microsoft.netcore.app.runtime.browser-wasm
+            runtime_pack_nupkg: Microsoft.NETCore.App.Runtime.Mono.browser-wasm
           - name: st-mm2
             threads: "false"
             mm: "2"
             copy_pack: "false"
+            runtime_pack_bin: microsoft.netcore.app.runtime.browser-wasm
+            runtime_pack_nupkg: Microsoft.NETCore.App.Runtime.Mono.browser-wasm
           - name: mt-mm1
             threads: "true"
             mm: "1"
-            copy_pack: "false"
+            copy_pack: "true"
+            runtime_pack_bin: microsoft.netcore.app.runtime.multithread.browser-wasm
+            runtime_pack_nupkg: Microsoft.NETCore.App.Runtime.Mono.multithread.browser-wasm
           - name: mt-mm2
             threads: "true"
             mm: "2"
             copy_pack: "false"
+            runtime_pack_bin: microsoft.netcore.app.runtime.multithread.browser-wasm
+            runtime_pack_nupkg: Microsoft.NETCore.App.Runtime.Mono.multithread.browser-wasm
     env:
       ROOTFS_DIR: /crossrootfs/x64
       RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}/runtime/artifacts
@@ -741,17 +749,6 @@ jobs:
             echo "::error::Cached runtime artifacts missing dotnet.native.wasm: $wasm"
             exit 1
           fi
-          if [[ "${{ matrix.copy_pack }}" == "true" ]]; then
-            lib_dir="$RUNTIME_ARTIFACTS_DIR/bin/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes/browser-wasm/lib/net10.0"
-            if [[ ! -d "$lib_dir" ]]; then
-              echo "::error::Runtime lib directory not found: $lib_dir"
-              exit 1
-            fi
-            if [[ ! -f "$lib_dir/System.Runtime.dll" ]]; then
-              echo "::error::Runtime lib missing System.Runtime.dll: $lib_dir/System.Runtime.dll"
-              exit 1
-            fi
-          fi
 
       - name: Build
         id: build-runtime
@@ -845,11 +842,7 @@ jobs:
           fi
 
           pack_base="$RUNTIME_ARTIFACTS_DIR/bin"
-          if [[ "${{ matrix.threads }}" == "true" ]]; then
-            pack_dir="$pack_base/microsoft.netcore.app.runtime.multithread.browser-wasm/$CONFIG/runtimes/browser-wasm/native"
-          else
-            pack_dir="$pack_base/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes/browser-wasm/native"
-          fi
+          pack_dir="$pack_base/${{ matrix.runtime_pack_bin }}/$CONFIG/runtimes/browser-wasm/native"
           if [[ -d "$pack_dir" ]]; then
             mkdir -p "$out/runtime-pack"
             if [[ -f "$pack_dir/dotnet.native.wasm" ]]; then
@@ -928,11 +921,7 @@ jobs:
           cp -a "$native_dir/." "$out/native/"
 
           pkg_dir="$RUNTIME_ARTIFACTS_DIR/packages/$CONFIG/Shipping"
-          if [[ "${{ matrix.threads }}" == "true" ]]; then
-            pkg_pattern="Microsoft.NETCore.App.Runtime.Mono.multithread.browser-wasm.*.nupkg"
-          else
-            pkg_pattern="Microsoft.NETCore.App.Runtime.Mono.browser-wasm.*.nupkg"
-          fi
+          pkg_pattern="${{ matrix.runtime_pack_nupkg }}.*.nupkg"
           shopt -s nullglob
           pkgs=()
           for candidate in "$pkg_dir"/$pkg_pattern; do
@@ -987,31 +976,8 @@ jobs:
           done
 
           if [[ "${{ matrix.copy_pack }}" == "true" ]]; then
-            lib_dir="$RUNTIME_ARTIFACTS_DIR/bin/microsoft.netcore.app.runtime.browser-wasm/$CONFIG/runtimes/browser-wasm/lib/net10.0"
-            if [[ ! -d "$lib_dir" ]]; then
-              echo "::error::Runtime lib directory not found: $lib_dir"
-              exit 1
-            fi
             out_lib="$out/lib/net10.0"
             mkdir -p "$out_lib"
-            cp -a "$lib_dir/." "$out_lib/"
-
-            pkg_dir="$RUNTIME_ARTIFACTS_DIR/packages/$CONFIG/Shipping"
-            pkg_pattern="Microsoft.NETCore.App.Runtime.Mono.browser-wasm.*.nupkg"
-            shopt -s nullglob
-            pkgs=()
-            for candidate in "$pkg_dir"/$pkg_pattern; do
-              if [[ "$candidate" == *.symbols.nupkg ]]; then
-                continue
-              fi
-              pkgs+=("$candidate")
-            done
-            shopt -u nullglob
-            if [[ "${#pkgs[@]}" -ne 1 ]]; then
-              echo "::error::Expected exactly one runtime pack (non-symbols, $pkg_pattern) under $pkg_dir, found ${#pkgs[@]}"
-              exit 1
-            fi
-            pkg="${pkgs[0]}"
             runtime_lib_glob="runtimes/browser-wasm/lib/net10.0/*"
             unzip -jo "$pkg" \
               "$runtime_lib_glob" \
@@ -1109,15 +1075,25 @@ jobs:
               exit 1
             fi
           done
-          lib_dir="$root/runtime-wasm-st-mm1/lib/net10.0"
-          if [[ ! -d "$lib_dir" ]]; then
-            echo "::error::Missing lib directory: $lib_dir"
-            exit 1
-          fi
-          if [[ ! -f "$lib_dir/System.Runtime.dll" ]]; then
-            echo "::error::Missing System.Runtime.dll in $lib_dir"
-            exit 1
-          fi
+          managed_artifacts=(
+            "runtime-wasm-st-mm1"
+            "runtime-wasm-mt-mm1"
+          )
+          for artifact in "${managed_artifacts[@]}"; do
+            lib_dir="$root/$artifact/lib/net10.0"
+            if [[ ! -d "$lib_dir" ]]; then
+              echo "::error::Missing lib directory: $lib_dir"
+              exit 1
+            fi
+            if [[ ! -f "$lib_dir/System.Runtime.dll" ]]; then
+              echo "::error::Missing System.Runtime.dll in $lib_dir"
+              exit 1
+            fi
+            if [[ ! -f "$lib_dir/System.Runtime.InteropServices.JavaScript.dll" ]]; then
+              echo "::error::Missing System.Runtime.InteropServices.JavaScript.dll in $lib_dir"
+              exit 1
+            fi
+          done
 
       - name: Resolve package version
         id: package-version

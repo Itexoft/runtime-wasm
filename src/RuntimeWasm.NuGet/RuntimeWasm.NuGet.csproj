@@ -31,7 +31,7 @@
         <AssemblyVersion Condition="'$(VersionFromFile)' != ''">$(VersionFromFile)</AssemblyVersion>
         <FileVersion Condition="'$(VersionFromFile)' != ''">$(VersionFromFile)</FileVersion>
         <BrowserWasmPackageRoot>runtimes/browser-wasm</BrowserWasmPackageRoot>
-        <BrowserWasmLibPackagePath>$(BrowserWasmPackageRoot)/lib/net10.0</BrowserWasmLibPackagePath>
+        <BrowserWasmLibPackageRoot>$(BrowserWasmPackageRoot)/lib/net10.0</BrowserWasmLibPackageRoot>
         <BrowserWasmNativePackageRoot>$(BrowserWasmPackageRoot)/native</BrowserWasmNativePackageRoot>
 
         <ArtifactsStMm1>$(ArtifactsRoot)/runtime-wasm-st-mm1</ArtifactsStMm1>
@@ -47,6 +47,7 @@
 
     <Target Name="ValidateArtifactLayout" BeforeTargets="Pack" DependsOnTargets="ValidateArtifactsRoot">
         <Error Condition="!Exists('$(ArtifactsStMm1)/lib/net10.0')" Text="Managed runtime lib directory not found: $(ArtifactsStMm1)/lib/net10.0" />
+        <Error Condition="!Exists('$(ArtifactsMtMm1)/lib/net10.0')" Text="Managed runtime lib directory not found: $(ArtifactsMtMm1)/lib/net10.0" />
         <Error Condition="!Exists('$(ArtifactsStMm1)/native')" Text="Native runtime directory not found: $(ArtifactsStMm1)/native" />
         <Error Condition="!Exists('$(ArtifactsStMm2)/native')" Text="Native runtime directory not found: $(ArtifactsStMm2)/native" />
         <Error Condition="!Exists('$(ArtifactsMtMm1)/native')" Text="Native runtime directory not found: $(ArtifactsMtMm1)/native" />
@@ -85,8 +86,10 @@
     </ItemGroup>
 
     <ItemGroup>
-        <RuntimeLib Include="$(ArtifactsStMm1)/lib/net10.0/**/*" />
-        <None Include="@(RuntimeLib)" Pack="true" PackagePath="$(BrowserWasmLibPackagePath)/%(RecursiveDir)%(Filename)%(Extension)" />
+        <RuntimeLibSinglethread Include="$(ArtifactsStMm1)/lib/net10.0/**/*" />
+        <RuntimeLibMultithread Include="$(ArtifactsMtMm1)/lib/net10.0/**/*" />
+        <None Include="@(RuntimeLibSinglethread)" Pack="true" PackagePath="$(BrowserWasmLibPackageRoot)/singlethread/%(RecursiveDir)%(Filename)%(Extension)" />
+        <None Include="@(RuntimeLibMultithread)" Pack="true" PackagePath="$(BrowserWasmLibPackageRoot)/multithread/%(RecursiveDir)%(Filename)%(Extension)" />
     </ItemGroup>
 
     <ItemGroup>

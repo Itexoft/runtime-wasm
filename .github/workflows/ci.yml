@@ -368,6 +368,27 @@ jobs:
           fi
           cp -f "$src" "$dst"
 
+      - name: Replace emscripten dlsync mailbox fix (mt)
+        if: matrix.threads == 'true'
+        run: |
+          set -euo pipefail
+          emsroot="$GITHUB_WORKSPACE/runtime/src/mono/browser/emsdk/upstream/emscripten"
+          replace() {
+            local src="$GITHUB_WORKSPACE/.github/emscripten/$1"
+            local dst="$emsroot/$2"
+            if [[ ! -f "$src" ]]; then
+              echo "::error::replacement not found: $src"
+              exit 1
+            fi
+            if [[ ! -f "$dst" ]]; then
+              echo "::error::target not found: $dst"
+              exit 1
+            fi
+            cp -f "$src" "$dst"
+          }
+          replace thread_mailbox.c      system/lib/pthread/thread_mailbox.c
+          replace emscripten_internal.h system/lib/libc/emscripten_internal.h
+
       - name: Export emsdk environment
         run: |
           set -euo pipefail

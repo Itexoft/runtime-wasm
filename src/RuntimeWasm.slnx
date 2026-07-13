@@ -1,4 +1,3 @@
 <Solution>
-    <Project Path="RuntimeWasm/RuntimeWasm.csproj"/>
     <Project Path="RuntimeWasm.NuGet/RuntimeWasm.NuGet.csproj"/>
 </Solution>

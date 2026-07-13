@@ -19,23 +19,34 @@ def fail(message: str) -> "NoReturn":
     raise SystemExit(1)
 
 
-def fetch_json(url: str) -> object:
+def fetch_json(url: str, empty_on_not_found: bool = False) -> object:
+    # Input: one HTTP JSON URL and whether exact HTTP 404 means an empty result. Output: the
+    # deserialized JSON value or {} for that allowed 404. No persistent state changes; correctness
+    # requires every other HTTP status and every invalid JSON body to fail explicitly.
     try:
         result = subprocess.run(
-            ["curl", "-fsSL", url],
-            check=True,
+            ["curl", "-sSL", "-w", "\n%{http_code}", url],
+            check=False,
             capture_output=True,
             text=True,
         )
     except FileNotFoundError as exc:
         fail(f"curl not found: {exc}")
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.strip()
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
         detail = f": {stderr}" if stderr else ""
         fail(f"Failed to fetch {url}{detail}")
 
+    body, separator, status = result.stdout.rpartition("\n")
+    if not separator:
+        fail(f"HTTP status is missing from the response for {url}")
+    if status == "404" and empty_on_not_found:
+        return {}
+    if status != "200":
+        fail(f"Failed to fetch {url}: HTTP {status}")
+
     try:
-        return json.loads(result.stdout)
+        return json.loads(body)
     except json.JSONDecodeError as exc:
         fail(f"Failed to parse JSON from {url}: {exc}")
 
@@ -120,7 +131,7 @@ def load_published_versions(source_url: str, package_id: str) -> list[str]:
     package_base_address = resolve_package_base_address(source_url)
     normalized_id = urllib.parse.quote(package_id.lower(), safe="")
     versions_url = f"{package_base_address}/{normalized_id}/index.json"
-    payload = fetch_json(versions_url)
+    payload = fetch_json(versions_url, empty_on_not_found=True)
 
     if not isinstance(payload, dict):
         fail(f"Unexpected package index format: {versions_url}")

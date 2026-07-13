@@ -19,6 +19,9 @@ env:
   RUNTIME_REF: wasm-dylink-pinvoke-10.0
   CONFIG: Release
   NUGET_SOURCE: https://api.nuget.org/v3/index.json
+  LINUX_AOT_HOST_RID: linux-x64
+  OSX_AOT_HOST_RID: osx-arm64
+  AOT_COMPILER_FILE_NAME: mono-aot-cross
 
 jobs:
   build:
@@ -982,6 +985,7 @@ jobs:
             unzip -jo "$pkg" \
               "$runtime_lib_glob" \
               -d "$out_lib"
+            cp -a "$out/native/System.Private.CoreLib.dll" "$out_lib/"
             if [[ ! -f "$out_lib/Microsoft.NETCore.App.deps.json" ]]; then
               echo "::error::Missing Microsoft.NETCore.App.deps.json after extract: $out_lib"
               exit 1
@@ -1000,8 +1004,125 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  build-aot-compiler-linux-x64:
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-webassembly-amd64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Clone runtime
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$RUNTIME_REF" "$RUNTIME_REPO" runtime
+
+      - name: Build browser-wasm AOT compiler
+        run: |
+          set -euo pipefail
+          ./runtime/build.sh \
+            -s mono.aotcross \
+            -c "$CONFIG" \
+            -os linux \
+            -arch x64 \
+            /p:MonoCrossAOTTargetOS=browser \
+            /p:BuildTests=false \
+            /p:RunTests=false
+
+      - name: Assemble AOT compiler artifact
+        run: |
+          set -euo pipefail
+          source_dir="$GITHUB_WORKSPACE/runtime/artifacts/bin/mono/browser.wasm.$CONFIG/cross/browser-wasm"
+          compiler="$source_dir/$AOT_COMPILER_FILE_NAME"
+          if [[ ! -x "$compiler" ]]; then
+            echo "::error::Mono AOT cross compiler not found or not executable: $compiler"
+            exit 1
+          fi
+
+          out="$GITHUB_WORKSPACE/artifacts/runtime-wasm-aot-linux-x64/tools/$LINUX_AOT_HOST_RID"
+          mkdir -p "$out"
+          cp -a "$source_dir/." "$out/"
+          rm -f "$out/$AOT_COMPILER_FILE_NAME.dbg" "$out/$AOT_COMPILER_FILE_NAME.dwarf" "$out/$AOT_COMPILER_FILE_NAME.pdb"
+
+      - name: Upload AOT compiler artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-wasm-aot-linux-x64
+          path: artifacts/runtime-wasm-aot-linux-x64
+          if-no-files-found: error
+          retention-days: 1
+
+  build-aot-compiler-osx-arm64:
+    runs-on: macos-14
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Clone runtime
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$RUNTIME_REF" "$RUNTIME_REPO" runtime
+
+      - name: Build browser-wasm AOT compiler
+        run: |
+          set -euo pipefail
+          ./runtime/build.sh \
+            -s mono.aotcross \
+            -c "$CONFIG" \
+            -os osx \
+            -arch arm64 \
+            /p:MonoCrossAOTTargetOS=browser \
+            /p:BuildTests=false \
+            /p:RunTests=false
+
+      - name: Assemble AOT compiler artifact
+        run: |
+          set -euo pipefail
+          source_dir="$GITHUB_WORKSPACE/runtime/artifacts/bin/mono/browser.wasm.$CONFIG/cross/browser-wasm"
+          compiler="$source_dir/$AOT_COMPILER_FILE_NAME"
+          if [[ ! -x "$compiler" ]]; then
+            echo "::error::Mono AOT cross compiler not found or not executable: $compiler"
+            exit 1
+          fi
+          architectures="$(lipo -archs "$compiler")"
+          if [[ "$architectures" != "arm64" ]]; then
+            echo "::error::Expected Mach-O arm64 Mono AOT cross compiler, found architectures: $architectures"
+            exit 1
+          fi
+          file "$compiler"
+
+          out="$GITHUB_WORKSPACE/artifacts/runtime-wasm-aot-osx-arm64/tools/$OSX_AOT_HOST_RID"
+          mkdir -p "$out"
+          cp -a "$source_dir/." "$out/"
+          rm -f "$out/$AOT_COMPILER_FILE_NAME.dbg" "$out/$AOT_COMPILER_FILE_NAME.dwarf" "$out/$AOT_COMPILER_FILE_NAME.pdb"
+
+      - name: Upload AOT compiler artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-wasm-aot-osx-arm64
+          path: artifacts/runtime-wasm-aot-osx-arm64
+          if-no-files-found: error
+          retention-days: 1
+
   package:
-    needs: build
+    needs:
+      - build
+      - build-aot-compiler-linux-x64
+      - build-aot-compiler-osx-arm64
     runs-on: ubuntu-latest
     outputs:
       run-id: ${{ steps.run-info.outputs.run-id }}
@@ -1093,7 +1214,42 @@ jobs:
               echo "::error::Missing System.Runtime.InteropServices.JavaScript.dll in $lib_dir"
               exit 1
             fi
+            if [[ ! -f "$lib_dir/System.Private.CoreLib.dll" ]]; then
+              echo "::error::Missing System.Private.CoreLib.dll in $lib_dir"
+              exit 1
+            fi
           done
+          linux_aot_compiler="$root/runtime-wasm-aot-linux-x64/tools/$LINUX_AOT_HOST_RID/$AOT_COMPILER_FILE_NAME"
+          if [[ ! -f "$linux_aot_compiler" ]]; then
+            echo "::error::Missing Linux x64 Mono AOT cross compiler: $linux_aot_compiler"
+            exit 1
+          fi
+          osx_aot_compiler="$root/runtime-wasm-aot-osx-arm64/tools/$OSX_AOT_HOST_RID/$AOT_COMPILER_FILE_NAME"
+          if [[ ! -f "$osx_aot_compiler" ]]; then
+            echo "::error::Missing macOS arm64 Mono AOT cross compiler: $osx_aot_compiler"
+            exit 1
+          fi
+
+      - name: Assemble AOT compiler package root
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/artifacts/input"
+          aot_root="$root/aot/tools"
+          if [[ -e "$root/aot" ]]; then
+            echo "::error::AOT compiler package root already exists: $root/aot"
+            exit 1
+          fi
+          mkdir -p "$aot_root"
+          cp -a "$root/runtime-wasm-aot-linux-x64/tools/$LINUX_AOT_HOST_RID" "$aot_root/"
+          cp -a "$root/runtime-wasm-aot-osx-arm64/tools/$OSX_AOT_HOST_RID" "$aot_root/"
+          if [[ ! -f "$aot_root/$LINUX_AOT_HOST_RID/$AOT_COMPILER_FILE_NAME" ]]; then
+            echo "::error::Linux x64 Mono AOT cross compiler was not assembled"
+            exit 1
+          fi
+          if [[ ! -f "$aot_root/$OSX_AOT_HOST_RID/$AOT_COMPILER_FILE_NAME" ]]; then
+            echo "::error::macOS arm64 Mono AOT cross compiler was not assembled"
+            exit 1
+          fi
 
       - name: Resolve package version
         id: package-version
@@ -1127,8 +1283,6 @@ jobs:
             -p:ArtifactsRoot="$GITHUB_WORKSPACE/artifacts/input" \
             -p:Version="$version" \
             -p:PackageVersion="$version" \
-            -p:AssemblyVersion="$version" \
-            -p:FileVersion="$version" \
             -o "$out"
 
       - name: Upload merged NuGet

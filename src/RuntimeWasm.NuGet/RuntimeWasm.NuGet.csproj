@@ -13,7 +13,7 @@
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <RepositoryUrl>https://github.com/Itexoft/runtime-wasm</RepositoryUrl>
         <PackageProjectUrl>https://github.com/Itexoft/runtime-wasm</PackageProjectUrl>
-        <Description>Prebuilt dotnet.native.wasm variants for browser-wasm.</Description>
+        <Description>Prebuilt browser-wasm runtime variants and the matching Mono AOT compiler.</Description>
         <IncludeBuildOutput>false</IncludeBuildOutput>
         <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
         <GenerateDependencyFile>false</GenerateDependencyFile>
@@ -28,16 +28,16 @@
         <VersionFromFile Condition="Exists('$(VersionFile)')">$([System.IO.File]::ReadAllText('$(VersionFile)').Trim())</VersionFromFile>
         <Version Condition="'$(VersionFromFile)' != ''">$(VersionFromFile)</Version>
         <PackageVersion Condition="'$(VersionFromFile)' != ''">$(VersionFromFile)</PackageVersion>
-        <AssemblyVersion Condition="'$(VersionFromFile)' != ''">$(VersionFromFile)</AssemblyVersion>
-        <FileVersion Condition="'$(VersionFromFile)' != ''">$(VersionFromFile)</FileVersion>
         <BrowserWasmPackageRoot>runtimes/browser-wasm</BrowserWasmPackageRoot>
         <BrowserWasmLibPackageRoot>$(BrowserWasmPackageRoot)/lib/net10.0</BrowserWasmLibPackageRoot>
         <BrowserWasmNativePackageRoot>$(BrowserWasmPackageRoot)/native</BrowserWasmNativePackageRoot>
-
         <ArtifactsStMm1>$(ArtifactsRoot)/runtime-wasm-st-mm1</ArtifactsStMm1>
         <ArtifactsStMm2>$(ArtifactsRoot)/runtime-wasm-st-mm2</ArtifactsStMm2>
         <ArtifactsMtMm1>$(ArtifactsRoot)/runtime-wasm-mt-mm1</ArtifactsMtMm1>
         <ArtifactsMtMm2>$(ArtifactsRoot)/runtime-wasm-mt-mm2</ArtifactsMtMm2>
+        <AotCompilerArtifactsRoot>$(ArtifactsRoot)/aot</AotCompilerArtifactsRoot>
+        <AotCompilerLinuxX64Path>$(AotCompilerArtifactsRoot)/tools/linux-x64/mono-aot-cross</AotCompilerLinuxX64Path>
+        <AotCompilerOsxArm64Path>$(AotCompilerArtifactsRoot)/tools/osx-arm64/mono-aot-cross</AotCompilerOsxArm64Path>
     </PropertyGroup>
 
     <Target Name="ValidateArtifactsRoot" BeforeTargets="Pack">
@@ -48,10 +48,14 @@
     <Target Name="ValidateArtifactLayout" BeforeTargets="Pack" DependsOnTargets="ValidateArtifactsRoot">
         <Error Condition="!Exists('$(ArtifactsStMm1)/lib/net10.0')" Text="Managed runtime lib directory not found: $(ArtifactsStMm1)/lib/net10.0" />
         <Error Condition="!Exists('$(ArtifactsMtMm1)/lib/net10.0')" Text="Managed runtime lib directory not found: $(ArtifactsMtMm1)/lib/net10.0" />
+        <Error Condition="!Exists('$(ArtifactsStMm1)/lib/net10.0/System.Private.CoreLib.dll')" Text="Singlethread System.Private.CoreLib.dll not found: $(ArtifactsStMm1)/lib/net10.0/System.Private.CoreLib.dll" />
+        <Error Condition="!Exists('$(ArtifactsMtMm1)/lib/net10.0/System.Private.CoreLib.dll')" Text="Multithread System.Private.CoreLib.dll not found: $(ArtifactsMtMm1)/lib/net10.0/System.Private.CoreLib.dll" />
         <Error Condition="!Exists('$(ArtifactsStMm1)/native')" Text="Native runtime directory not found: $(ArtifactsStMm1)/native" />
         <Error Condition="!Exists('$(ArtifactsStMm2)/native')" Text="Native runtime directory not found: $(ArtifactsStMm2)/native" />
         <Error Condition="!Exists('$(ArtifactsMtMm1)/native')" Text="Native runtime directory not found: $(ArtifactsMtMm1)/native" />
         <Error Condition="!Exists('$(ArtifactsMtMm2)/native')" Text="Native runtime directory not found: $(ArtifactsMtMm2)/native" />
+        <Error Condition="!Exists('$(AotCompilerLinuxX64Path)')" Text="Linux x64 Mono AOT cross compiler not found: $(AotCompilerLinuxX64Path)" />
+        <Error Condition="!Exists('$(AotCompilerOsxArm64Path)')" Text="macOS arm64 Mono AOT cross compiler not found: $(AotCompilerOsxArm64Path)" />
     </Target>
 
     <Target Name="ExcludeTransientPackItems" BeforeTargets="GenerateNuspec">
@@ -101,5 +105,10 @@
         <None Include="@(WasmNativeStMm2)" Pack="true" PackagePath="$(BrowserWasmNativePackageRoot)/singlethread/mm2/%(RecursiveDir)%(Filename)%(Extension)" />
         <None Include="@(WasmNativeMtMm1)" Pack="true" PackagePath="$(BrowserWasmNativePackageRoot)/multithread/mm1/%(RecursiveDir)%(Filename)%(Extension)" />
         <None Include="@(WasmNativeMtMm2)" Pack="true" PackagePath="$(BrowserWasmNativePackageRoot)/multithread/mm2/%(RecursiveDir)%(Filename)%(Extension)" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="$(AotCompilerArtifactsRoot)/tools/linux-x64/*" Pack="true" PackagePath="tools/linux-x64/" />
+        <None Include="$(AotCompilerArtifactsRoot)/tools/osx-arm64/*" Pack="true" PackagePath="tools/osx-arm64/" />
     </ItemGroup>
 </Project>
